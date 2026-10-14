@@ -30,14 +30,13 @@ describe('executable resolution (no binary planting)', () => {
     }
   });
 
-  it('prefers a real .exe over an npm .cmd shim on Windows', () => {
+  it.runIf(process.platform === 'win32')('prefers a real .exe over an npm .cmd shim on Windows', () => {
     const a = tempDir();
     const b = tempDir();
     fs.writeFileSync(path.join(a, 'claude.cmd'), '');
     fs.writeFileSync(path.join(b, 'claude.exe'), '');
     expect(resolveExecutable('claude', { PATH: `${a};${b}` }, 'win32')).toBe(path.win32.join(b, 'claude.exe'));
-  });
-});
+  });});
 
 describe('vault lock', () => {
   it('never takes over a lock whose owner is still alive, however old', async () => {
