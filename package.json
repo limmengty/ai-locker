@@ -1,0 +1,63 @@
+{
+  "name": "ai-locker",
+  "version": "0.1.0",
+  "description": "Encrypted multi-account switcher for Claude Code. Keep several logins in a passphrase-protected vault and swap the active one with one command.",
+  "author": "KEAT PORHONG",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/porhong/ai-locker.git"
+  },
+  "homepage": "https://github.com/porhong/ai-locker#readme",
+  "bugs": {
+    "url": "https://github.com/porhong/ai-locker/issues"
+  },
+  "type": "module",
+  "bin": {
+    "ai-locker": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.10"
+  },
+  "os": [
+    "win32",
+    "darwin",
+    "linux"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src test",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "account",
+    "switcher",
+    "profiles",
+    "vault",
+    "cli"
+  ],
+  "dependencies": {
+    "@inquirer/prompts": "^7.8.0",
+    "commander": "^14.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.30.0",
+    "@types/node": "^24.0.0",
+    "eslint": "^9.30.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.40.0",
+    "vitest": "^3.2.0"
+  }
+}
