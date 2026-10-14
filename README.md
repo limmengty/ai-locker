@@ -2,12 +2,14 @@
 
 Keep several Claude Code logins in an encrypted vault and switch the active one with a single command. Works on Windows and macOS (and Linux).
 
+Run it with `npx @anantbot/ai-locker <command>`, or install it once with `npm install -g @anantbot/ai-locker` and use the shorter `ai-locker <command>`. The rest of this README uses the short form.
+
 ```sh
-npx ai-locker init                    # create the vault, choose a passphrase
-npx ai-locker add work --from-live    # save the account you're logged in with now
-npx ai-locker add personal            # log in to another account and save it
-npx ai-locker use work                # switch Claude Code to "work"
-npx ai-locker status --usage          # active account + session/weekly usage
+npx @anantbot/ai-locker init                    # create the vault, choose a passphrase
+npx @anantbot/ai-locker add work --from-live    # save the account you're logged in with now
+npx @anantbot/ai-locker add personal            # log in to another account and save it
+npx @anantbot/ai-locker use work                # switch Claude Code to "work"
+npx @anantbot/ai-locker status --usage          # active account + session/weekly usage
 ```
 
 ## How it works

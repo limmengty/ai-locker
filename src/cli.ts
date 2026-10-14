@@ -26,11 +26,11 @@ program.addHelpText(
   'after',
   `
 Examples:
-  npx ai-locker init                    create the vault
-  npx ai-locker add work --from-live    save the account you're logged in with
-  npx ai-locker add personal            log in to another account and save it
-  npx ai-locker use work                switch Claude Code to "work"
-  npx ai-locker status --usage          active account and usage windows`,
+  npx @anantbot/ai-locker init                    create the vault
+  npx @anantbot/ai-locker add work --from-live    save the account you're logged in with
+  npx @anantbot/ai-locker add personal            log in to another account and save it
+  npx @anantbot/ai-locker use work                switch Claude Code to "work"
+  npx @anantbot/ai-locker status --usage          active account and usage windows`,
 );
 
 async function main(): Promise<void> {

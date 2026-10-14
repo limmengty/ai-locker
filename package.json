@@ -1,5 +1,5 @@
 {
-  "name": "ai-locker",
+  "name": "@anantbot/ai-locker",
   "version": "0.1.0",
   "description": "Encrypted multi-account switcher for Claude Code. Keep several logins in a passphrase-protected vault and swap the active one with one command.",
   "author": "KEAT PORHONG",
@@ -59,5 +59,8 @@
     "typescript": "^5.9.0",
     "typescript-eslint": "^8.40.0",
     "vitest": "^3.2.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
