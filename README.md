@@ -2,15 +2,23 @@
 
 Keep several Claude Code logins in an encrypted vault and switch the active one with a single command. Works on Windows and macOS (and Linux).
 
-Run it with `npx @anantbot/ai-locker <command>`, or install it once with `npm install -g @anantbot/ai-locker` and use the shorter `ai-locker <command>`. The rest of this README uses the short form.
+## Install
 
 ```sh
-npx @anantbot/ai-locker init                    # create the vault, choose a passphrase
-npx @anantbot/ai-locker add work --from-live    # save the account you're logged in with now
-npx @anantbot/ai-locker add personal            # log in to another account and save it
-npx @anantbot/ai-locker use work                # switch Claude Code to "work"
-npx @anantbot/ai-locker status --usage          # active account + session/weekly usage
+npm install -g @anantbot/ai-locker
 ```
+
+This installs the `ai-locker` command:
+
+```sh
+ai-locker init                    # create the vault, choose a passphrase
+ai-locker add work --from-live    # save the account you're logged in with now
+ai-locker add personal            # log in to another account and save it
+ai-locker use work                # switch Claude Code to "work"
+ai-locker status --usage          # active account + session/weekly usage
+```
+
+To try it without installing, put `npx @anantbot/ai-locker` in front of any command, for example `npx @anantbot/ai-locker use work`. To update later, run `npm update -g @anantbot/ai-locker`.
 
 ## How it works
 
@@ -48,7 +56,7 @@ VDK ──HKDF-SHA256(purpose, id)──▶ per-file key ──AES-256-GCM (AAD 
 - **OS unlock (optional, on by default).** A copy of the data key is protected by Windows DPAPI (CurrentUser) or the macOS login Keychain, so routine commands don't prompt. It only decrypts for your OS user on this machine. Turn it off with `ai-locker config os-unlock off`, or bypass it for one command with `--strict`.
 - **The active login is as exposed as Claude Code makes it.** Claude Code needs it in its own store to work. `ai-locker lock` moves it into the vault and leaves Claude Code logged out; `ai-locker unlock` brings it back.
 - **Secrets never touch argv, logs, or `--json` output.** Keys go to PowerShell or `security` over stdin. One exception: on macOS, a credentials payload too large for `security -i` (many MCP connector tokens) is passed as an argument, where only processes of the same user can see it, and those can already query the Keychain.
-- **Zero native dependencies.** Crypto comes from Node's built-in `crypto`. OS key stores are reached through the in-box `powershell.exe` and `/usr/bin/security`, so `npx` works without build tools.
+- **Zero native dependencies.** Crypto comes from Node's built-in `crypto`. OS key stores are reached through the in-box `powershell.exe` and `/usr/bin/security`, so installing needs no build tools.
 - `~/.ai-locker` is created with mode 0700 on macOS/Linux, and with an ACL granting only your user on Windows.
 
 What it does not protect against: malware already running as your user while the vault is unlocked (OS unlock on) or while a login is active. That is the same exposure Claude Code's own storage has.
