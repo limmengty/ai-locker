@@ -61,6 +61,36 @@ describe('JSONC editing', () => {
     expect(empty).toBe('{\n  "a": 1\n}');
     expect(editJsoncObject('{"a":1}', { a: undefined })).toBe('{}');
   });
+
+  it('does not double a trailing comma when appending', () => {
+    const out = editJsoncObject('{\n  "a": 1,\n}\n', { b: 2 });
+    expect(out).not.toContain(',,');
+    expect(parseJsonc(out)).toEqual({ a: 1, b: 2 });
+  });
+
+  it('appends outside a trailing line comment', () => {
+    const out = editJsoncObject('{\n  "a": 1, // keep me\n}\n', { b: 2 });
+    expect(out).toContain('// keep me');
+    expect(parseJsonc(out)).toEqual({ a: 1, b: 2 });
+  });
+
+  it('removes a trailing comma together with the only key', () => {
+    const out = editJsoncObject('{ "a": 1, }', { a: undefined });
+    expect(parseJsonc(out)).toEqual({});
+    expect(out).not.toContain(',');
+  });
+});
+
+describe('keyring argument safety', () => {
+  it('refuses macOS values that could break out of `security -i`', async () => {
+    const backend = keyringBackend('darwin');
+    await expect(
+      backend.write({ service: 'copilot-cli', account: 'x" -w hacked', secret: Buffer.from('t') }),
+    ).rejects.toMatchObject({ code: 'E_KEYRING' });
+    await expect(
+      backend.write({ service: 'copilot-cli', account: 'x\\y', secret: Buffer.from('t') }),
+    ).rejects.toMatchObject({ code: 'E_KEYRING' });
+  });
 });
 
 describe.runIf(process.platform === 'win32')('Windows Credential Manager backend', () => {

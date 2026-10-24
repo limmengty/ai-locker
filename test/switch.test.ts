@@ -203,6 +203,13 @@ describe('add via login', () => {
     });
     expect(res.profile.email).toBe('bob@example.com');
   });
+
+  it('refuses to save the current login under the new profile name', async () => {
+    const { fake, ctx } = await setup();
+    fake.loginAs('alice');
+    await expect(addViaLogin(ctx, 'bob', { saveUnknownAs: 'bob' })).rejects.toMatchObject({ code: 'E_ARGS' });
+    expect(fake.liveCreds()).not.toBeNull();
+  });
 });
 
 describe('lock / unlock / rollback', () => {
@@ -230,6 +237,15 @@ describe('lock / unlock / rollback', () => {
     expect(res?.reason).toBe('use bob');
     expect(fake.liveCreds()).toEqual(before);
     expect(await vault.readRollback()).toBeNull();
+  });
+
+  it('lock records the active profile, not a stale lastActive from an earlier lock', async () => {
+    const { vault, ctx } = await twoProfiles();
+    const bob = requireProfile(vault.manifest, 'claude-code', 'bob');
+    vault.manifest.lastActive['claude-code'] = bob.id;
+    await lockLive(ctx);
+    const alice = requireProfile(vault.manifest, 'claude-code', 'alice');
+    expect(vault.manifest.lastActive['claude-code']).toBe(alice.id);
   });
 });
 

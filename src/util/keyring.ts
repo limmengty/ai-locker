@@ -55,6 +55,17 @@ function assertSafe(value: string, what: string): void {
   }
 }
 
+/**
+ * `security -i` re-parses each line as a command, so quotes and backslashes in an imported
+ * host/login could break out of the argument. Only used for the stdin path.
+ */
+function assertMacSafe(value: string, what: string): void {
+  assertSafe(value, what);
+  if (/["\\]/.test(value)) {
+    throw new LockerError(`Invalid keyring ${what}.`, 'E_KEYRING');
+  }
+}
+
 function base64(s: string): string {
   return Buffer.from(s, 'utf8').toString('base64');
 }
@@ -283,8 +294,8 @@ class MacKeyring implements KeyringBackend {
   }
 
   async write(item: KeyringItem): Promise<void> {
-    assertSafe(item.service, 'service');
-    assertSafe(item.account, 'account');
+    assertMacSafe(item.service, 'service');
+    assertMacSafe(item.account, 'account');
     const hex = item.secret.toString('hex');
     const line = `add-generic-password -U -s "${item.service}" -a "${item.account}" -X ${hex}\n`;
     const res =

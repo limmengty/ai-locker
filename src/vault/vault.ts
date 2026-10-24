@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import crypto from 'node:crypto';
 import { atomicWrite, readIfExists, removeIfExists } from './atomicWrite.js';
 import { defaultKdf, deriveKek, open, openJson, randomId, seal, sealJson, subkey, type KdfParams, type Sealed } from './crypto.js';
@@ -205,17 +206,50 @@ export class Vault {
 
   async writeRollback(record: RollbackRecord): Promise<void> {
     const sealed = sealJson(subkey(this.vdk, 'rollback'), record, aad(this.id, 'rollback'));
-    await atomicWrite(this.paths.rollback, JSON.stringify(sealed));
+    await atomicWrite(this.paths.rollbackFor(record.provider), JSON.stringify(sealed));
   }
 
-  async readRollback(): Promise<RollbackRecord | null> {
-    const raw = await readIfExists(this.paths.rollback);
+  /**
+   * Read the pending rollback for `provider`, or any pending rollback when omitted. A record
+   * is provider-scoped so an interrupted operation on one provider never blocks another.
+   */
+  async readRollback(provider?: string): Promise<RollbackRecord | null> {
+    const files = provider ? [this.paths.rollbackFor(provider), this.paths.rollback] : this.rollbackFiles();
+    for (const file of files) {
+      const record = await this.readRollbackFile(file);
+      if (record && (!provider || record.provider === provider)) return record;
+    }
+    return null;
+  }
+
+  async clearRollback(provider?: string): Promise<void> {
+    if (!provider) {
+      for (const file of this.rollbackFiles()) await removeIfExists(file);
+      return;
+    }
+    await removeIfExists(this.paths.rollbackFor(provider));
+    const legacy = await this.readRollbackFile(this.paths.rollback);
+    if (legacy?.provider === provider) await removeIfExists(this.paths.rollback);
+  }
+
+  private rollbackFiles(): string[] {
+    const files = [this.paths.rollback];
+    let names: string[] = [];
+    try {
+      names = fs.readdirSync(this.paths.home);
+    } catch {
+      // A vault always has a home directory, but a missing one just means no rollbacks.
+    }
+    for (const name of names.sort()) {
+      if (/^rollback-[A-Za-z0-9._-]+\.enc$/.test(name)) files.push(path.join(this.paths.home, name));
+    }
+    return files;
+  }
+
+  private async readRollbackFile(file: string): Promise<RollbackRecord | null> {
+    const raw = await readIfExists(file);
     if (raw === null) return null;
     return openJson<RollbackRecord>(subkey(this.vdk, 'rollback'), JSON.parse(raw) as Sealed, aad(this.id, 'rollback'));
-  }
-
-  async clearRollback(): Promise<void> {
-    await removeIfExists(this.paths.rollback);
   }
 
   /**
@@ -233,10 +267,11 @@ export class Vault {
       const sealed = sealJson(subkey(newVdk, 'profile', p.id), data, aad(this.id, 'profile', p.id));
       await atomicWrite(this.paths.profile(p.id) + REKEY, JSON.stringify(sealed));
     }
-    const rollback = await this.readRollback();
-    if (rollback) {
-      const sealed = sealJson(subkey(newVdk, 'rollback'), rollback, aad(this.id, 'rollback'));
-      await atomicWrite(this.paths.rollback + REKEY, JSON.stringify(sealed));
+    for (const file of this.rollbackFiles()) {
+      const record = await this.readRollbackFile(file);
+      if (!record) continue;
+      const sealed = sealJson(subkey(newVdk, 'rollback'), record, aad(this.id, 'rollback'));
+      await atomicWrite(file + REKEY, JSON.stringify(sealed));
     }
 
     const kdf = defaultKdf();
@@ -270,8 +305,13 @@ export class Vault {
    */
   private async finishRekey(): Promise<void> {
     const staged: { file: string; key: Buffer; ad: string }[] = [];
-    if (fs.existsSync(this.paths.rollback + REKEY)) {
-      staged.push({ file: this.paths.rollback, key: subkey(this.vdk, 'rollback'), ad: aad(this.id, 'rollback') });
+    for (const name of fs.existsSync(this.paths.home) ? fs.readdirSync(this.paths.home) : []) {
+      if (!/^rollback(?:-[A-Za-z0-9._-]+)?\.enc\.rekey$/.test(name)) continue;
+      staged.push({
+        file: path.join(this.paths.home, name.slice(0, -REKEY.length)),
+        key: subkey(this.vdk, 'rollback'),
+        ad: aad(this.id, 'rollback'),
+      });
     }
     for (const name of fs.existsSync(this.paths.profilesDir) ? fs.readdirSync(this.paths.profilesDir) : []) {
       const m = name.match(/^(.+)\.enc\.rekey$/);

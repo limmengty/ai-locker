@@ -5,9 +5,10 @@ import { resolveExecutable } from '../src/util/exec.js';
 import { withLock } from '../src/vault/lock.js';
 import { Vault } from '../src/vault/vault.js';
 import { deriveKek, subkey, sealJson } from '../src/vault/crypto.js';
-import { addFromLive, switchTo, lockLive, type Ctx } from '../src/core/switchService.js';
+import { addFromLive, switchTo, lockLive, rollback, type Ctx } from '../src/core/switchService.js';
 import { requireProfile } from '../src/core/profiles.js';
 import { exportProfiles, importProfiles } from '../src/core/transfer.js';
+import { getProvider } from '../src/providers/index.js';
 import { FakeClaude, PASS, newVault, tempDir } from './helpers.js';
 
 describe('executable resolution (no binary planting)', () => {
@@ -62,6 +63,29 @@ describe('interrupted operations', () => {
     await expect(switchTo(ctx, bob)).rejects.toMatchObject({ code: 'E_PENDING_ROLLBACK' });
     await expect(lockLive(ctx)).rejects.toMatchObject({ code: 'E_PENDING_ROLLBACK' });
     expect((await vault.readRollback())?.reason).toBe('add x');
+  });
+
+  it('does not block one provider on another provider\'s pending rollback', async () => {
+    const fake = new FakeClaude();
+    const { vault } = await newVault();
+    const ctx: Ctx = { vault, provider: fake.provider() };
+    fake.loginAs('bob');
+    await addFromLive(ctx, 'bob');
+    fake.loginAs('alice');
+    await addFromLive(ctx, 'alice');
+    await vault.writeRollback({ provider: 'qoder', takenAt: 't', reason: 'other provider', snapshot: { x: 1 } });
+
+    await switchTo(ctx, requireProfile(vault.manifest, 'claude-code', 'bob'));
+    expect(await rollback(ctx)).toBeNull();
+    expect((await vault.readRollback('qoder'))?.reason).toBe('other provider');
+  });
+});
+
+describe('provider registry', () => {
+  it('never resolves prototype keys and canonicalises aliases', () => {
+    expect(() => getProvider('__proto__')).toThrow(expect.objectContaining({ code: 'E_ARGS' }));
+    expect(() => getProvider('constructor')).toThrow(expect.objectContaining({ code: 'E_ARGS' }));
+    expect(getProvider('ANTIGRAVITY').id).toBe('agy');
   });
 });
 
@@ -119,6 +143,22 @@ describe('untrusted import files', () => {
       payload: {},
     });
     await expect(importProfiles(vault, evil, 'whatever')).rejects.toMatchObject({ code: 'E_FORMAT' });
+  });
+
+  it('skips a profile when the validator throws instead of aborting the import', async () => {
+    const fake = new FakeClaude();
+    const src = await newVault();
+    fake.loginAs('alice');
+    const meta = await addFromLive({ vault: src.vault, provider: fake.provider() }, 'alice');
+    const text = await exportProfiles(src.vault, [meta], 'export passphrase 1');
+    const dst = await newVault();
+    const res = await importProfiles(dst.vault, text, 'export passphrase 1', {
+      validateSnapshot: async () => {
+        throw new Error('validator exploded');
+      },
+    });
+    expect(res.imported).toHaveLength(0);
+    expect(res.skipped[0]?.reason).toBe('validator exploded');
   });
 
   it('sanitises profile names from the bundle', async () => {

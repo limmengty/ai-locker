@@ -2,6 +2,7 @@ import { defaultKdf, deriveKek, openJson, sealJson, subkey, type KdfParams, type
 import { checkPassphrase, type ProfileMeta, type Vault } from '../vault/vault.js';
 import { LockerError } from '../util/errors.js';
 import { matchProfile, newProfileMeta, validateName } from './profiles.js';
+import { canonicalProviderId } from '../providers/index.js';
 
 /**
  * Portable, passphrase-encrypted bundle for moving profiles to another machine. It uses
@@ -83,20 +84,27 @@ export async function importProfiles(
 
   const result: ImportResult = { imported: [], skipped: [] };
   for (const { meta, snapshot } of payload.profiles) {
-    const existing = matchProfile(vault.manifest, meta.provider, meta.fingerprint, { accountKey: meta.accountKey });
+    const provider = canonicalProviderId(String(meta.provider ?? ''));
+    const canonical = { ...meta, provider };
+    const existing = matchProfile(vault.manifest, provider, meta.fingerprint, { accountKey: meta.accountKey });
     if (existing) {
       result.skipped.push({ name: safeName(meta.name), reason: `same account as existing profile "${existing.name}"` });
       continue;
     }
     if (opts.validateSnapshot) {
-      const check = await opts.validateSnapshot(meta, snapshot);
+      let check: { ok: boolean; reason?: string };
+      try {
+        check = await opts.validateSnapshot(canonical, snapshot);
+      } catch (err) {
+        check = { ok: false, reason: (err as Error).message || 'could not validate on this machine' };
+      }
       if (!check.ok) {
         result.skipped.push({ name: safeName(meta.name), reason: check.reason ?? 'not usable on this machine' });
         continue;
       }
     }
-    const name = uniqueName(vault, meta.provider, safeName(meta.name));
-    const fresh = { ...newProfileMeta(name, meta.provider, meta.fingerprint, {}), ...pickIdentity(meta) };
+    const name = uniqueName(vault, provider, safeName(meta.name));
+    const fresh = { ...newProfileMeta(name, provider, meta.fingerprint, {}), ...pickIdentity(meta) };
     await vault.writeProfile(fresh.id, snapshot);
     vault.manifest.profiles.push(fresh);
     result.imported.push(fresh);

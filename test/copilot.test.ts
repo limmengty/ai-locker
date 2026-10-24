@@ -284,6 +284,33 @@ describe('Copilot snapshot validation', () => {
       await ctx.provider.validateSnapshot({ ...snap, credentials: [{ account: 'https://github.com:octocat', token: chunked }] }),
     ).toMatchObject({ ok: false, reason: expect.stringContaining('chunked') });
   });
+
+  it('refuses account suffixes, hosts and logins that could retarget the token', async () => {
+    const { fake, ctx } = await setup();
+    fake.loginAs('octocat');
+    const snap = (await ctx.provider.readLive())!;
+    const token = snap.credentials[0]!.token;
+
+    expect(
+      await ctx.provider.validateSnapshot({
+        ...snap,
+        credentials: [{ account: 'https://github.com:octocat:evil', token }],
+      }),
+    ).toMatchObject({ ok: false });
+    expect(await ctx.provider.validateSnapshot({ ...snap, host: 'https://evil.example/path' })).toMatchObject({ ok: false });
+    expect(await ctx.provider.validateSnapshot({ ...snap, login: 'bad:login' })).toMatchObject({ ok: false });
+  });
+
+  it('does not touch the keyring when config.json is invalid', async () => {
+    const { fake, ctx } = await setup();
+    fake.loginAs('octocat');
+    const snap = (await ctx.provider.readLive())!;
+    fake.keyring.items.clear();
+    fs.writeFileSync(fake.configFile, '{ broken');
+
+    await expect(ctx.provider.writeLive(snap)).rejects.toMatchObject({ code: 'E_COPILOT_CONFIG' });
+    expect(fake.keyring.items.size).toBe(0);
+  });
 });
 
 describe('Copilot export / import', () => {

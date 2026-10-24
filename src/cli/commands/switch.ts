@@ -109,8 +109,17 @@ export function registerSwitch(program: Command): void {
     .action(async (opts: { force?: boolean; yes?: boolean }, cmd: Command) => {
       const g = cmd.optsWithGlobals<GlobalOpts>();
       await withVault(g, async (ctx) => {
-        const record = await ctx.vault.readRollback();
+        const record = await ctx.vault.readRollback(ctx.provider.id);
         if (!record) {
+          const other = await ctx.vault.readRollback();
+          if (other) {
+            emit(g, { restored: false, pendingProvider: other.provider }, () =>
+              info(
+                `The interrupted operation belongs to ${other.provider}; retry with \`--provider ${other.provider} rollback\`.`,
+              ),
+            );
+            return;
+          }
           emit(g, { restored: false }, () => info('No rollback snapshot; the last operation completed normally.'));
           return;
         }

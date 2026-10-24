@@ -18,6 +18,8 @@ import {
   resolveAgyEnv,
   type AgyEnv,
 } from './env.js';
+import { assertKeyringReady, cliDoctorCheck, keyringAvailability, keyringDoctorCheck } from '../shared/cli.js';
+import { decodeBase64Field } from '../shared/snapshot.js';
 import { MAX_AGY_CREDENTIAL_BYTES, parseAgyCredential, type AgyCredential } from './credential.js';
 import { AgyStore } from './store.js';
 import { findAgyProcesses } from './process.js';
@@ -203,10 +205,7 @@ export class AgyProvider implements Provider<AgySnapshot> {
         'Run ai-locker as the desktop user who is signed in to Antigravity.',
       );
     }
-    const availability = await this.keyring.available();
-    if (!availability.ok) {
-      throw new LockerError(`No OS credential store available: ${availability.detail}`, 'E_KEYRING');
-    }
+    await assertKeyringReady(this.keyring);
   }
 
   async validateSnapshot(snapshot: AgySnapshot): Promise<{ ok: boolean; reason?: string }> {
@@ -220,26 +219,18 @@ export class AgyProvider implements Provider<AgySnapshot> {
 
   async doctor(): Promise<DoctorCheck[]> {
     const checks: DoctorCheck[] = [];
-    const bin = this.executable();
-    if (!bin) {
-      checks.push({ name: 'Antigravity CLI', status: 'warn', detail: '`agy` not found on PATH' });
-    } else {
-      const version = await this.runVersion(bin);
-      checks.push(
-        version.code === 0
-          ? { name: 'Antigravity CLI', status: 'ok', detail: `${version.stdout.trim() || 'installed'} at ${bin}` }
-          : { name: 'Antigravity CLI', status: 'warn', detail: `\`${bin} --version\` failed` },
-      );
-    }
+    checks.push(
+      await cliDoctorCheck({
+        label: 'Antigravity CLI',
+        command: 'agy',
+        bin: this.executable(),
+        runVersion: (bin) => this.runVersion(bin),
+      }),
+    );
     checks.push({ name: 'State directory', status: 'info', detail: this.env.stateDir });
     checks.push({ name: 'Config directory', status: 'info', detail: this.env.configDir });
 
-    const availability = await this.keyring.available();
-    checks.push({
-      name: 'Credential store',
-      status: availability.ok ? 'ok' : 'fail',
-      detail: `${this.keyring.kind}: ${availability.detail}`,
-    });
+    checks.push(keyringDoctorCheck(this.keyring, await keyringAvailability(this.keyring)));
 
     let credential: AgyCredential | null = null;
     try {
@@ -324,14 +315,7 @@ function decodeSnapshot(snapshot: AgySnapshot): Buffer {
   if (!snapshot || snapshot.v !== 1) {
     throw new LockerError('Unsupported Antigravity profile format.', 'E_FORMAT');
   }
-  if (typeof snapshot.credential !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(snapshot.credential)) {
-    throw new LockerError('Antigravity profile does not contain a valid credential blob.', 'E_FORMAT');
-  }
-  const data = Buffer.from(snapshot.credential, 'base64');
-  if (data.length === 0 || data.length > MAX_AGY_CREDENTIAL_BYTES) {
-    throw new LockerError('Antigravity profile credential has an invalid size.', 'E_FORMAT');
-  }
-  return data;
+  return decodeBase64Field(snapshot.credential, { label: 'Antigravity', maxBytes: MAX_AGY_CREDENTIAL_BYTES });
 }
 
 function failureDetail(prefix: string, res: ExecResult): string {

@@ -15,26 +15,34 @@ export function registerInspect(program: Command): void {
   program
     .command('status')
     .description('show the active profile and the live login of the selected provider')
-    .option('-u, --usage', 'also fetch usage for each profile (Claude Code only; contacts api.anthropic.com)')
+    .option('-u, --usage', 'also fetch usage for each profile (when the provider exposes it)')
     .action(async (opts: { usage?: boolean }, cmd: Command) => {
       const g = cmd.optsWithGlobals<GlobalOpts>();
       await withVault(g, async ({ vault, provider }) => {
         const activeId = vault.manifest.active[provider.id] ?? null;
         const active = vault.manifest.profiles.find((p) => p.id === activeId) ?? null;
-        const live = await provider.readLive();
+        let live: Awaited<ReturnType<typeof provider.readLive>> = null;
+        let liveError: string | undefined;
+        try {
+          live = await provider.readLive();
+        } catch (err) {
+          // A malformed live store must not make `status` unusable; `doctor` shows the detail.
+          liveError = (err as Error).message;
+        }
         const liveLogin = live && provider.hasLogin(live) ? live : null;
         const liveId = liveLogin ? provider.identity(liveLogin) : null;
         const liveMatch = liveLogin
           ? matchProfile(vault.manifest, provider.id, provider.fingerprint(liveLogin), liveId ?? {})
           : undefined;
-        const usageSupported = Boolean(provider.usage);
+        const usageFn = provider.capabilities.usage ? provider.usage : undefined;
+        const usageSupported = typeof usageFn === 'function';
 
         const usage: Record<string, UsageReport> = {};
-        if (opts.usage && provider.usage) {
+        if (opts.usage && usageFn) {
           for (const p of vault.manifest.profiles.filter((x) => x.provider === provider.id)) {
             // The live store holds the freshest tokens for whichever profile it belongs to.
             const snap = liveMatch?.id === p.id && liveLogin ? liveLogin : await vault.readProfile(p.id);
-            usage[p.name] = await provider.usage(snap);
+            usage[p.name] = await usageFn(snap);
           }
         }
 
@@ -53,6 +61,7 @@ export function registerInspect(program: Command): void {
                 refreshExpiresAt: liveId.refreshExpiresAt ?? null,
               }
             : null,
+          liveError: liveError ?? null,
           usage: opts.usage && usageSupported ? usage : undefined,
         };
 
@@ -69,6 +78,8 @@ export function registerInspect(program: Command): void {
               info(`${c.bold('Access token')}    expires ${relTime(liveId.tokenExpiresAt)} (refreshed automatically)`);
             }
             if (liveId.refreshExpiresAt) info(`${c.bold('Login')}           expires ${relTime(liveId.refreshExpiresAt)}`);
+          } else if (liveError) {
+            info(`${c.bold('Live login')}      ${c.yellow('unavailable')} — ${liveError}`);
           } else {
             info(`${c.bold('Live login')}      ${c.dim('none (logged out)')}`);
           }
@@ -115,11 +126,14 @@ export function registerInspect(program: Command): void {
           status: access.ok ? 'ok' : 'warn',
           detail: access.ok ? access.detail : `others may have access: ${access.detail}`,
         });
-        if (fs.existsSync(paths.rollback)) {
+        const pendingRollbacks = fs
+          .readdirSync(paths.home)
+          .filter((name) => /^rollback(?:-[A-Za-z0-9._-]+)?\.enc$/.test(name));
+        if (pendingRollbacks.length > 0) {
           checks.push({
             name: 'Interrupted operation',
             status: 'warn',
-            detail: 'a rollback snapshot exists; run `ai-locker rollback` to restore the login from before it',
+            detail: 'a rollback snapshot exists; run `ai-locker --provider <id> rollback` to restore it',
           });
         }
         try {

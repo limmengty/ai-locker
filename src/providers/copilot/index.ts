@@ -18,6 +18,7 @@ import type {
   RunningProcess,
   VerifyResult,
 } from '../Provider.js';
+import { assertKeyringReady, cliDoctorCheck, keyringAvailability, keyringDoctorCheck } from '../shared/cli.js';
 import {
   cleanCopilotEnv,
   DISABLING_ENV_VARS,
@@ -140,12 +141,14 @@ export class CopilotProvider implements Provider<CopilotSnapshot> {
 
   async writeLive(snapshot: CopilotSnapshot): Promise<void> {
     const snap = decodeSnapshot(snapshot);
+    // Parse (and compute) the config update before touching the keyring, so invalid JSONC
+    // cannot leave the keyring half-switched.
+    const { text } = await readCopilotConfig(this.env);
+    const next = withActiveUser(text, { host: snap.host, login: snap.login, kind: snap.kind });
     for (const credential of snap.credentials) {
       const secret = Buffer.from(credential.token, 'base64');
       await this.keyring.write(this.item(credential.account, secret, credential));
     }
-    const { text } = await readCopilotConfig(this.env);
-    const next = withActiveUser(text, { host: snap.host, login: snap.login, kind: snap.kind });
     if (next !== text) await writeCopilotConfig(this.env, next);
   }
 
@@ -213,33 +216,43 @@ export class CopilotProvider implements Provider<CopilotSnapshot> {
       };
     }
     const credentials = await this.readCredentials(active.host, active.login);
-    const token = credentials
-      .map((c) => tokenText(Buffer.from(c.token, 'base64')))
-      .find((t): t is string => t !== null);
-    if (!token) {
+    const tokens = [
+      ...new Set(
+        credentials.map((c) => tokenText(Buffer.from(c.token, 'base64'))).filter((t): t is string => t !== null),
+      ),
+    ];
+    if (tokens.length === 0) {
       return {
         ok: false,
         username: active.login,
         detail: `${SERVICE} has no usable token for ${active.login} (plaintext or chunked storage?)`,
       };
     }
-    const result = await this.checkToken(active.host, token);
-    if (!result.ok) return { ok: false, username: active.login, detail: result.detail };
-    if (result.login && result.login.toLowerCase() !== active.login.toLowerCase()) {
+    // The CLI keeps one item per auth authority; either token may be the current one.
+    let lastFailure: { detail: string } | undefined;
+    for (const token of tokens) {
+      const result = await this.checkToken(active.host, token);
+      if (!result.ok) {
+        lastFailure = result;
+        continue;
+      }
+      if (result.login && result.login.toLowerCase() !== active.login.toLowerCase()) {
+        return {
+          ok: false,
+          username: active.login,
+          detail: `GitHub reports ${result.login}, expected ${active.login}`,
+        };
+      }
       return {
-        ok: false,
+        ok: true,
+        skipped: result.skipped,
         username: active.login,
-        detail: `GitHub reports ${result.login}, expected ${active.login}`,
+        detail: result.skipped
+          ? `stored token for ${active.login}; ${result.detail}`
+          : `logged in as ${active.login}`,
       };
     }
-    return {
-      ok: true,
-      skipped: result.skipped,
-      username: active.login,
-      detail: result.skipped
-        ? `stored token for ${active.login}; ${result.detail}`
-        : `logged in as ${active.login}`,
-    };
+    return { ok: false, username: active.login, detail: lastFailure?.detail ?? 'GitHub rejected the saved token' };
   }
 
   async login(opts: LoginOptions): Promise<number> {
@@ -285,10 +298,7 @@ export class CopilotProvider implements Provider<CopilotSnapshot> {
         'Set "storeTokenPlaintext": false in Copilot settings, log in again, then retry.',
       );
     }
-    const availability = await this.keyring.available();
-    if (!availability.ok) {
-      throw new LockerError(`No OS credential store available: ${availability.detail}`, 'E_KEYRING');
-    }
+    await assertKeyringReady(this.keyring);
   }
 
   async validateSnapshot(snapshot: CopilotSnapshot): Promise<{ ok: boolean; reason?: string }> {
@@ -302,25 +312,17 @@ export class CopilotProvider implements Provider<CopilotSnapshot> {
 
   async doctor(): Promise<DoctorCheck[]> {
     const checks: DoctorCheck[] = [];
-    const bin = this.executable();
-    if (!bin) {
-      checks.push({ name: 'Copilot CLI', status: 'warn', detail: '`copilot` not found on PATH' });
-    } else {
-      const version = await this.runVersion(bin);
-      checks.push(
-        version.code === 0
-          ? { name: 'Copilot CLI', status: 'ok', detail: `${version.stdout.trim() || 'installed'} at ${bin}` }
-          : { name: 'Copilot CLI', status: 'warn', detail: `\`${bin} --version\` failed` },
-      );
-    }
+    checks.push(
+      await cliDoctorCheck({
+        label: 'Copilot CLI',
+        command: 'copilot',
+        bin: this.executable(),
+        runVersion: (bin) => this.runVersion(bin),
+      }),
+    );
     checks.push({ name: 'Config directory', status: 'info', detail: this.env.configDir });
 
-    const availability = await this.keyring.available();
-    checks.push({
-      name: 'Credential store',
-      status: availability.ok ? 'ok' : 'fail',
-      detail: `${this.keyring.kind}: ${availability.detail}`,
-    });
+    checks.push(keyringDoctorCheck(this.keyring, await keyringAvailability(this.keyring)));
 
     const settings = await this.plaintextStorage().catch((err: Error) => err);
     if (settings instanceof Error) {
@@ -490,8 +492,16 @@ function isChunked(secret: Buffer): boolean {
   return secretText(secret).startsWith(CHUNKED_SECRET_PREFIX);
 }
 
+function isValidHost(host: string): boolean {
+  // Hostname plus optional port only: a path, query, fragment or embedded credentials in an
+  // imported profile would change where verifyLive sends the stored token.
+  return /^https:\/\/[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::\d{1,5})?$/i.test(
+    normalizeHost(host),
+  );
+}
+
 function assertHost(host: string): void {
-  if (!/^https:\/\/[^\s"'<>\\]+$/i.test(host.trim())) {
+  if (!isValidHost(host)) {
     throw new LockerError(`"${host}" is not a valid https host.`, 'E_ARGS', 'Pass the GitHub host, e.g. https://github.com.');
   }
 }
@@ -503,10 +513,14 @@ function decodeSnapshot(snapshot: CopilotSnapshot): CopilotSnapshot {
   const host = typeof snapshot.host === 'string' ? normalizeHost(snapshot.host) : '';
   const login = typeof snapshot.login === 'string' ? snapshot.login.trim() : '';
   if (!host || !login) throw new LockerError('Copilot profile is missing its account.', 'E_FORMAT');
+  if (!isValidHost(host)) throw new LockerError('Copilot profile has an invalid host.', 'E_FORMAT');
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(login)) {
+    throw new LockerError('Copilot profile has an invalid login name.', 'E_FORMAT');
+  }
   if (!Array.isArray(snapshot.credentials) || snapshot.credentials.length === 0) {
     throw new LockerError('Copilot profile has no credentials.', 'E_FORMAT');
   }
-  const prefix = `${host}:${login}`;
+  const expectedAccounts = new Set(credentialAccounts(host, login));
   const seen = new Set<string>();
   const credentials: CopilotCredential[] = [];
   for (const raw of snapshot.credentials) {
@@ -514,7 +528,7 @@ function decodeSnapshot(snapshot: CopilotSnapshot): CopilotSnapshot {
     const account = typeof raw.account === 'string' ? raw.account : '';
     const token = typeof raw.token === 'string' ? raw.token : '';
     if (!account || !token) throw new LockerError('Copilot profile has a malformed credential.', 'E_FORMAT');
-    if (account !== prefix && !account.startsWith(`${prefix}:`)) {
+    if (!expectedAccounts.has(account)) {
       throw new LockerError('Copilot profile contains a credential for a different account.', 'E_FORMAT');
     }
     if (!/^[A-Za-z0-9+/]+={0,2}$/.test(token) || token.length % 4 !== 0) {
@@ -535,7 +549,7 @@ function decodeSnapshot(snapshot: CopilotSnapshot): CopilotSnapshot {
     credentials.push({
       account,
       token,
-      persist: Number.isInteger(raw.persist) ? raw.persist : undefined,
+      persist: raw.persist === 2 || raw.persist === 3 ? raw.persist : undefined,
       comment: typeof raw.comment === 'string' ? raw.comment : undefined,
     });
   }

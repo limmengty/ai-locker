@@ -107,6 +107,25 @@ describe('Vault', () => {
     expect(await vault.readRollback()).toBeNull();
   });
 
+  it('re-encrypts pending rollbacks when the passphrase changes', async () => {
+    const { vault, paths } = await newVault();
+    await vault.writeRollback({ provider: 'claude-code', takenAt: 't', reason: 'r', snapshot: { x: 1 } });
+    await vault.changePassphrase('the new passphrase 42');
+    expect((await vault.readRollback('claude-code'))?.snapshot).toEqual({ x: 1 });
+    expect(fs.existsSync(paths.rollbackFor('claude-code') + '.rekey')).toBe(false);
+  });
+
+  it('keeps rollback records separate per provider and reads a legacy file', async () => {
+    const { vault, paths } = await newVault();
+    await vault.writeRollback({ provider: 'claude-code', takenAt: 'now', reason: 'legacy', snapshot: { x: 1 } });
+    fs.renameSync(paths.rollbackFor('claude-code'), paths.rollback);
+
+    expect(await vault.readRollback('qoder')).toBeNull();
+    expect((await vault.readRollback('claude-code'))?.reason).toBe('legacy');
+    await vault.clearRollback('claude-code');
+    expect(fs.existsSync(paths.rollback)).toBe(false);
+  });
+
   it.runIf(process.platform === 'win32')('unlocks via Windows DPAPI without the passphrase', async () => {
     const { vault, paths } = await newVault();
     await vault.enableOsUnlock();

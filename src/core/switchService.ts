@@ -48,8 +48,8 @@ export async function ensureNotRunning(provider: Provider<any>, force?: boolean)
  * An interrupted operation left the previous login only in the rollback record. Starting a
  * new operation would overwrite that record, so require `ai-locker rollback` first.
  */
-async function assertNoPendingRollback(vault: Vault): Promise<void> {
-  const pending = await vault.readRollback();
+async function assertNoPendingRollback(vault: Vault, provider: string): Promise<void> {
+  const pending = await vault.readRollback(provider);
   if (pending) {
     throw new LockerError(
       `A previous operation ("${pending.reason}", ${pending.takenAt}) was interrupted.`,
@@ -127,7 +127,7 @@ export interface SwitchResult {
 
 export async function switchTo(ctx: Ctx, target: ProfileMeta, opts: GuardOptions = {}): Promise<SwitchResult> {
   const { vault, provider } = ctx;
-  await assertNoPendingRollback(vault);
+  await assertNoPendingRollback(vault, provider.id);
   await provider.preflight?.();
   await ensureNotRunning(provider, opts.force);
 
@@ -146,7 +146,7 @@ export async function switchTo(ctx: Ctx, target: ProfileMeta, opts: GuardOptions
       }
     } catch (err) {
       await restoreLive(ctx, live);
-      await vault.clearRollback();
+      await vault.clearRollback(provider.id);
       await vault.audit(`use ${provider.id} ${target.id} failed-restored`);
       throw err;
     }
@@ -155,7 +155,7 @@ export async function switchTo(ctx: Ctx, target: ProfileMeta, opts: GuardOptions
   vault.manifest.active[provider.id] = target.id;
   target.lastUsedAt = new Date().toISOString();
   await vault.saveManifest();
-  if (!alreadyActive) await vault.clearRollback();
+  if (!alreadyActive) await vault.clearRollback(provider.id);
   await vault.audit(`use ${provider.id} ${target.id} ok`);
   return { profile: target, capture, verify, alreadyActive };
 }
@@ -181,12 +181,26 @@ export interface AddResult {
 export async function addViaLogin(ctx: Ctx, name: string, opts: AddOptions = {}): Promise<AddResult> {
   const { vault, provider } = ctx;
   assertNameFree(vault.manifest, provider.id, name);
-  await assertNoPendingRollback(vault);
+  if (opts.saveUnknownAs && opts.saveUnknownAs.toLowerCase() === name.toLowerCase()) {
+    throw new LockerError(
+      `Cannot save the current login as "${name}" and also use that name for the new account.`,
+      'E_ARGS',
+      'Pick a different name for the new profile or for --save-live-as.',
+    );
+  }
+  await assertNoPendingRollback(vault, provider.id);
   await provider.preflight?.();
   await ensureNotRunning(provider, opts.force);
 
   const live = await provider.readLive();
   const capture = await captureLive(ctx, opts, { live });
+  if ('profile' in capture && capture.profile.name.toLowerCase() === name.toLowerCase()) {
+    throw new LockerError(
+      `The current login was saved as "${name}", so it cannot also name the new account.`,
+      'E_EXISTS',
+      'Retry with a different profile name for the account you are about to log in to.',
+    );
+  }
   await writeRollback(ctx, `add ${name}`, live);
   let created: ProfileMeta | undefined;
   try {
@@ -226,7 +240,7 @@ export async function addViaLogin(ctx: Ctx, name: string, opts: AddOptions = {})
     vault.manifest.active[provider.id] = profile.id;
     profile.lastUsedAt = new Date().toISOString();
     await vault.saveManifest();
-    await vault.clearRollback();
+    await vault.clearRollback(provider.id);
     await vault.audit(`add ${provider.id} ${profile.id}${dup ? ' duplicate' : ''}`);
     return { profile, capture, duplicateOf: dup, verify };
   } catch (err) {
@@ -236,7 +250,7 @@ export async function addViaLogin(ctx: Ctx, name: string, opts: AddOptions = {})
       vault.manifest.profiles = vault.manifest.profiles.filter((p) => p.id !== id);
       await vault.deleteProfile(id);
     }
-    await vault.clearRollback();
+    await vault.clearRollback(provider.id);
     await vault.audit(`add ${provider.id} failed-restored`);
     throw err;
   }
@@ -276,7 +290,7 @@ export async function addFromLive(ctx: Ctx, name: string): Promise<ProfileMeta> 
 /** Move the live login into the vault and leave the provider logged out. */
 export async function lockLive(ctx: Ctx, opts: GuardOptions = {}): Promise<CaptureResult> {
   const { vault, provider } = ctx;
-  await assertNoPendingRollback(vault);
+  await assertNoPendingRollback(vault, provider.id);
   await provider.preflight?.();
   await ensureNotRunning(provider, opts.force);
   const live = await provider.readLive();
@@ -287,26 +301,25 @@ export async function lockLive(ctx: Ctx, opts: GuardOptions = {}): Promise<Captu
     await provider.clearLive();
   } catch (err) {
     await restoreLive(ctx, live);
-    await vault.clearRollback();
+    await vault.clearRollback(provider.id);
     await vault.audit(`lock ${provider.id} failed-restored`);
     throw err;
   }
-  const capturedId = 'profile' in capture ? capture.profile.id : (vault.manifest.active[provider.id] ?? null);
-  vault.manifest.lastActive[provider.id] = capturedId ?? vault.manifest.lastActive[provider.id] ?? null;
+  vault.manifest.lastActive[provider.id] = vault.manifest.active[provider.id] ?? null;
   vault.manifest.active[provider.id] = null;
   await vault.saveManifest();
-  await vault.clearRollback();
+  await vault.clearRollback(provider.id);
   await vault.audit(`lock ${provider.id}`);
   return capture;
 }
 
 /** Restore the live store from an interrupted operation's rollback record. */
 export async function rollback(ctx: Ctx, opts: { force?: boolean } = {}): Promise<{ takenAt: string; reason: string } | null> {
-  const record = await ctx.vault.readRollback();
-  if (!record || record.provider !== ctx.provider.id) return null;
+  const record = await ctx.vault.readRollback(ctx.provider.id);
+  if (!record) return null;
   await ensureNotRunning(ctx.provider, opts.force);
   await restoreLive(ctx, record.snapshot);
-  await ctx.vault.clearRollback();
+  await ctx.vault.clearRollback(ctx.provider.id);
   await ctx.vault.audit(`rollback ${ctx.provider.id}`);
   return { takenAt: record.takenAt, reason: record.reason };
 }

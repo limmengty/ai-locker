@@ -10,6 +10,8 @@ import type {
   RunningProcess,
   VerifyResult,
 } from '../Provider.js';
+import { cliDoctorCheck } from '../shared/cli.js';
+import { decodeBase64Field } from '../shared/snapshot.js';
 import { cleanQoderEnv, OVERRIDING_ENV_VARS, resolveQoderEnv, type QoderEnv } from './env.js';
 import { findQoderProcesses } from './process.js';
 import { fetchQoderStatus, statusToIdentity, type QoderStatus, type QoderStatusResult } from './status.js';
@@ -197,7 +199,12 @@ export class QoderProvider implements Provider<QoderSnapshot> {
     } catch (err) {
       return { ok: false, reason: (err as Error).message };
     }
-    const local = await this.store.machineIdHash();
+    let local: string | undefined;
+    try {
+      local = await this.store.machineIdHash();
+    } catch (err) {
+      return { ok: false, reason: (err as Error).message };
+    }
     if (!local) {
       return { ok: false, reason: 'Qoder has no machine_id on this machine; run `qodercli login` first' };
     }
@@ -209,17 +216,14 @@ export class QoderProvider implements Provider<QoderSnapshot> {
 
   async doctor(): Promise<DoctorCheck[]> {
     const checks: DoctorCheck[] = [];
-    const bin = this.executable();
-    if (!bin) {
-      checks.push({ name: 'Qoder CLI', status: 'warn', detail: '`qodercli` not found on PATH' });
-    } else {
-      const version = await this.runVersion(bin);
-      checks.push(
-        version.code === 0
-          ? { name: 'Qoder CLI', status: 'ok', detail: `${version.stdout.trim() || 'installed'} at ${bin}` }
-          : { name: 'Qoder CLI', status: 'warn', detail: `\`${bin} --version\` failed` },
-      );
-    }
+    checks.push(
+      await cliDoctorCheck({
+        label: 'Qoder CLI',
+        command: 'qodercli',
+        bin: this.executable(),
+        runVersion: (bin) => this.runVersion(bin),
+      }),
+    );
     checks.push({ name: 'Config directory', status: 'info', detail: this.env.configDir });
     checks.push({ name: 'Credential store', status: 'info', detail: `${this.store.kind}: ${this.store.location}` });
 
@@ -325,12 +329,5 @@ function decodeQoderSnapshot(snapshot: QoderSnapshot): Buffer {
   if (!snapshot || snapshot.v !== 1) {
     throw new LockerError('Unsupported Qoder profile format.', 'E_FORMAT');
   }
-  if (typeof snapshot.user !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(snapshot.user)) {
-    throw new LockerError('Qoder profile does not contain a valid credential blob.', 'E_FORMAT');
-  }
-  const data = Buffer.from(snapshot.user, 'base64');
-  if (data.length === 0 || data.length > MAX_QODER_SNAPSHOT_BYTES) {
-    throw new LockerError('Qoder profile credential has an invalid size.', 'E_FORMAT');
-  }
-  return data;
+  return decodeBase64Field(snapshot.user, { label: 'Qoder', maxBytes: MAX_QODER_SNAPSHOT_BYTES });
 }

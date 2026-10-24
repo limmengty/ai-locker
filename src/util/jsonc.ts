@@ -174,7 +174,7 @@ export function editJsoncObject(text: string, updates: Record<string, unknown>):
     const index = entries.findIndex((e) => e.key === key);
     if (value === undefined) {
       if (index < 0) continue;
-      const span = deletionSpan(entries, index);
+      const span = deletionSpan(text, root, entries, index);
       edits.push({ ...span, text: '' });
       continue;
     }
@@ -189,14 +189,19 @@ export function editJsoncObject(text: string, updates: Record<string, unknown>):
 
   if (appends.length > 0) {
     const indent = entries.length > 0 ? lineIndent(text, entries[0]!.keyStart) : '  ';
-    let at = root.end - 1; // the closing brace
-    while (at > root.start + 1 && /\s/.test(text[at - 1]!)) at--;
-    const hasEntries = entries.length > 0;
     const insertion = appends
       .map((a) => `${JSON.stringify(a.key)}: ${formatValue(a.value, indent, eol)}`)
       .join(`,${eol}${indent}`);
-    const next = hasEntries ? `${eol}${indent}${insertion}` : `${eol}${indent}${insertion}${eol}`;
-    edits.push({ start: at, end: at, text: `${hasEntries ? ',' : ''}${next}` });
+    if (entries.length === 0) {
+      edits.push({ start: root.end - 1, end: root.end - 1, text: `${eol}${indent}${insertion}${eol}` });
+    } else {
+      // Insert after the last entry (and after its comma, if any) so the new keys never land
+      // inside a trailing line comment and a pre-existing trailing comma is not doubled.
+      const last = entries[entries.length - 1]!;
+      const comma = commaAfter(text, last.valueEnd, root.end);
+      const at = comma >= 0 ? comma + 1 : last.valueEnd;
+      edits.push({ start: at, end: at, text: `${comma >= 0 ? '' : ','}${eol}${indent}${insertion}` });
+    }
   }
 
   edits.sort((a, b) => b.start - a.start);
@@ -205,11 +210,28 @@ export function editJsoncObject(text: string, updates: Record<string, unknown>):
   return out;
 }
 
-function deletionSpan(entries: ObjectEntry[], index: number): { start: number; end: number } {
+function deletionSpan(
+  text: string,
+  root: ParsedObject,
+  entries: ObjectEntry[],
+  index: number,
+): { start: number; end: number } {
   const entry = entries[index]!;
-  if (entries.length === 1) return { start: entry.keyStart, end: entry.valueEnd };
+  if (entries.length === 1) {
+    // Removing the only entry would leave `{,}` when the object had a trailing comma.
+    const comma = commaAfter(text, entry.valueEnd, root.end);
+    return { start: entry.keyStart, end: comma >= 0 ? comma + 1 : entry.valueEnd };
+  }
   if (index < entries.length - 1) return { start: entry.keyStart, end: entries[index + 1]!.keyStart };
   return { start: entries[index - 1]!.valueEnd, end: entry.valueEnd };
+}
+
+/** Index of the comma after `from`, skipping whitespace and comments; -1 when there is none. */
+function commaAfter(text: string, from: number, limit: number): number {
+  const parser = new JsoncParser(text);
+  parser.pos = from;
+  parser.skipTrivia();
+  return parser.pos < limit && text[parser.pos] === ',' ? parser.pos : -1;
 }
 
 function lineIndent(text: string, offset: number): string {
