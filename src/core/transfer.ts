@@ -2,6 +2,7 @@ import { defaultKdf, deriveKek, openJson, sealJson, subkey, type KdfParams, type
 import { checkPassphrase, type ProfileMeta, type Vault } from '../vault/vault.js';
 import { LockerError } from '../util/errors.js';
 import { matchProfile, newProfileMeta, validateName } from './profiles.js';
+import { canonicalProviderId } from '../providers/index.js';
 
 /**
  * Portable, passphrase-encrypted bundle for moving profiles to another machine. It uses
@@ -48,7 +49,17 @@ export interface ImportResult {
   skipped: { name: string; reason: string }[];
 }
 
-export async function importProfiles(vault: Vault, text: string, passphrase: string): Promise<ImportResult> {
+export interface ImportOptions {
+  /** Provider-specific check that a snapshot can work on this machine. */
+  validateSnapshot?: (meta: ProfileMeta, snapshot: unknown) => Promise<{ ok: boolean; reason?: string }>;
+}
+
+export async function importProfiles(
+  vault: Vault,
+  text: string,
+  passphrase: string,
+  opts: ImportOptions = {},
+): Promise<ImportResult> {
   let file: ExportFile;
   try {
     file = JSON.parse(text);
@@ -73,13 +84,27 @@ export async function importProfiles(vault: Vault, text: string, passphrase: str
 
   const result: ImportResult = { imported: [], skipped: [] };
   for (const { meta, snapshot } of payload.profiles) {
-    const existing = matchProfile(vault.manifest, meta.provider, meta.fingerprint, { accountKey: meta.accountKey });
+    const provider = canonicalProviderId(String(meta.provider ?? ''));
+    const canonical = { ...meta, provider };
+    const existing = matchProfile(vault.manifest, provider, meta.fingerprint, { accountKey: meta.accountKey });
     if (existing) {
       result.skipped.push({ name: safeName(meta.name), reason: `same account as existing profile "${existing.name}"` });
       continue;
     }
-    const name = uniqueName(vault, meta.provider, safeName(meta.name));
-    const fresh = { ...newProfileMeta(name, meta.provider, meta.fingerprint, {}), ...pickIdentity(meta) };
+    if (opts.validateSnapshot) {
+      let check: { ok: boolean; reason?: string };
+      try {
+        check = await opts.validateSnapshot(canonical, snapshot);
+      } catch (err) {
+        check = { ok: false, reason: (err as Error).message || 'could not validate on this machine' };
+      }
+      if (!check.ok) {
+        result.skipped.push({ name: safeName(meta.name), reason: check.reason ?? 'not usable on this machine' });
+        continue;
+      }
+    }
+    const name = uniqueName(vault, provider, safeName(meta.name));
+    const fresh = { ...newProfileMeta(name, provider, meta.fingerprint, {}), ...pickIdentity(meta) };
     await vault.writeProfile(fresh.id, snapshot);
     vault.manifest.profiles.push(fresh);
     result.imported.push(fresh);
@@ -90,8 +115,8 @@ export async function importProfiles(vault: Vault, text: string, passphrase: str
 }
 
 function pickIdentity(m: ProfileMeta): Partial<ProfileMeta> {
-  const { accountKey, email, organization, plan, tokenExpiresAt, refreshExpiresAt } = m;
-  return { accountKey, email, organization, plan, tokenExpiresAt, refreshExpiresAt };
+  const { accountKey, email, username, organization, plan, tokenExpiresAt, refreshExpiresAt } = m;
+  return { accountKey, email, username, organization, plan, tokenExpiresAt, refreshExpiresAt };
 }
 
 function safeName(name: unknown): string {

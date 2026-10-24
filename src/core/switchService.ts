@@ -19,7 +19,7 @@ export interface UnknownLivePolicy {
 }
 
 export interface GuardOptions extends UnknownLivePolicy {
-  /** Proceed even if Claude Code is running. */
+  /** Proceed even if the provider is running. */
   force?: boolean;
   /** Confirm the result with the provider's own CLI (default true). */
   verify?: boolean;
@@ -35,10 +35,11 @@ export async function ensureNotRunning(provider: Provider<any>, force?: boolean)
   const procs = await provider.runningProcesses();
   if (procs.length > 0) {
     const list = procs.map((p) => `${p.name} (pid ${p.pid})`).join(', ');
+    const what = provider.runningHint ?? `${provider.displayName} session`;
     throw new LockerError(
       `${provider.displayName} is running: ${list}.`,
       'E_RUNNING',
-      `Quit every ${provider.displayName} session (including IDE extensions) so it can't write old tokens back, then retry. Use --force to skip this check.`,
+      `Quit every ${what} so it can't write old tokens back, then retry. Use --force to skip this check.`,
     );
   }
 }
@@ -47,8 +48,8 @@ export async function ensureNotRunning(provider: Provider<any>, force?: boolean)
  * An interrupted operation left the previous login only in the rollback record. Starting a
  * new operation would overwrite that record, so require `ai-locker rollback` first.
  */
-async function assertNoPendingRollback(vault: Vault): Promise<void> {
-  const pending = await vault.readRollback();
+async function assertNoPendingRollback(vault: Vault, provider: string): Promise<void> {
+  const pending = await vault.readRollback(provider);
   if (pending) {
     throw new LockerError(
       `A previous operation ("${pending.reason}", ${pending.takenAt}) was interrupted.`,
@@ -59,12 +60,18 @@ async function assertNoPendingRollback(vault: Vault): Promise<void> {
 }
 
 /**
- * Save the live login back into the vault. Tokens rotate while Claude Code runs, so this
+ * Save the live login back into the vault. Tokens rotate while the provider runs, so this
  * must happen before anything overwrites the live store, or the saved copy goes stale.
+ *
+ * Pass `known` when the caller already read the live store, so it is not read twice.
  */
-export async function captureLive(ctx: Ctx, policy: UnknownLivePolicy = {}): Promise<CaptureResult> {
+export async function captureLive(
+  ctx: Ctx,
+  policy: UnknownLivePolicy = {},
+  known?: { live: unknown | null },
+): Promise<CaptureResult> {
   const { vault, provider } = ctx;
-  const live = await provider.readLive();
+  const live = known ? known.live : await provider.readLive();
   if (!live || !provider.hasLogin(live)) return { kind: 'empty' };
 
   const fp = provider.fingerprint(live);
@@ -94,17 +101,16 @@ export async function captureLive(ctx: Ctx, policy: UnknownLivePolicy = {}): Pro
   }
   if (policy.discardLive) return { kind: 'discarded', identity };
 
+  const who = identity.email ?? identity.username;
   throw new LockerError(
-    `The current ${provider.displayName} login${identity.email ? ` (${identity.email})` : ''} is not saved in the vault.`,
+    `The current ${provider.displayName} login${who ? ` (${who})` : ''} is not saved in the vault.`,
     'E_UNSAVED_LIVE',
     'Re-run with --save-live-as <name> to keep it, or --discard-live to overwrite it.',
   );
 }
 
-async function snapshotForRollback(ctx: Ctx, reason: string): Promise<unknown | null> {
-  const live = await ctx.provider.readLive();
-  await ctx.vault.writeRollback({ provider: ctx.provider.id, takenAt: new Date().toISOString(), reason, snapshot: live });
-  return live;
+async function writeRollback(ctx: Ctx, reason: string, snapshot: unknown | null): Promise<void> {
+  await ctx.vault.writeRollback({ provider: ctx.provider.id, takenAt: new Date().toISOString(), reason, snapshot });
 }
 
 async function restoreLive(ctx: Ctx, previous: unknown | null): Promise<void> {
@@ -121,15 +127,17 @@ export interface SwitchResult {
 
 export async function switchTo(ctx: Ctx, target: ProfileMeta, opts: GuardOptions = {}): Promise<SwitchResult> {
   const { vault, provider } = ctx;
-  await assertNoPendingRollback(vault);
+  await assertNoPendingRollback(vault, provider.id);
+  await provider.preflight?.();
   await ensureNotRunning(provider, opts.force);
 
-  const capture = await captureLive(ctx, opts);
+  const live = await provider.readLive();
+  const capture = await captureLive(ctx, opts, { live });
   const alreadyActive = 'profile' in capture && capture.profile.id === target.id;
 
   let verify: VerifyResult | undefined;
   if (!alreadyActive) {
-    const previous = await snapshotForRollback(ctx, `use ${target.name}`);
+    await writeRollback(ctx, `use ${target.name}`, live);
     try {
       await provider.writeLive(await vault.readProfile(target.id));
       if (opts.verify !== false) {
@@ -137,17 +145,17 @@ export async function switchTo(ctx: Ctx, target: ProfileMeta, opts: GuardOptions
         if (!verify.ok) throw new LockerError(`Verification failed: ${verify.detail}`, 'E_VERIFY');
       }
     } catch (err) {
-      await restoreLive(ctx, previous);
-      await vault.clearRollback();
+      await restoreLive(ctx, live);
+      await vault.clearRollback(provider.id);
       await vault.audit(`use ${provider.id} ${target.id} failed-restored`);
       throw err;
     }
-    await vault.clearRollback();
   }
 
   vault.manifest.active[provider.id] = target.id;
   target.lastUsedAt = new Date().toISOString();
   await vault.saveManifest();
+  if (!alreadyActive) await vault.clearRollback(provider.id);
   await vault.audit(`use ${provider.id} ${target.id} ok`);
   return { profile: target, capture, verify, alreadyActive };
 }
@@ -168,16 +176,32 @@ export interface AddResult {
 
 /**
  * Log in to a new account without ever calling logout: save the current login, empty the
- * live store, let Claude Code's own login flow fill it, then encrypt what it wrote.
+ * live store, let the provider's own login flow fill it, then encrypt what it wrote.
  */
 export async function addViaLogin(ctx: Ctx, name: string, opts: AddOptions = {}): Promise<AddResult> {
   const { vault, provider } = ctx;
   assertNameFree(vault.manifest, provider.id, name);
-  await assertNoPendingRollback(vault);
+  if (opts.saveUnknownAs && opts.saveUnknownAs.toLowerCase() === name.toLowerCase()) {
+    throw new LockerError(
+      `Cannot save the current login as "${name}" and also use that name for the new account.`,
+      'E_ARGS',
+      'Pick a different name for the new profile or for --save-live-as.',
+    );
+  }
+  await assertNoPendingRollback(vault, provider.id);
+  await provider.preflight?.();
   await ensureNotRunning(provider, opts.force);
 
-  const capture = await captureLive(ctx, opts);
-  const previous = await snapshotForRollback(ctx, `add ${name}`);
+  const live = await provider.readLive();
+  const capture = await captureLive(ctx, opts, { live });
+  if ('profile' in capture && capture.profile.name.toLowerCase() === name.toLowerCase()) {
+    throw new LockerError(
+      `The current login was saved as "${name}", so it cannot also name the new account.`,
+      'E_EXISTS',
+      'Retry with a different profile name for the account you are about to log in to.',
+    );
+  }
+  await writeRollback(ctx, `add ${name}`, live);
   let created: ProfileMeta | undefined;
   try {
     await provider.clearLive();
@@ -189,7 +213,11 @@ export async function addViaLogin(ctx: Ctx, name: string, opts: AddOptions = {})
     }
     const live = await provider.readLive();
     if (!live || !provider.hasLogin(live)) {
-      throw new LockerError('No login was found after the login step finished.', 'E_LOGIN');
+      throw new LockerError(
+        'No login was found after the login step finished.',
+        'E_LOGIN',
+        provider.manualLoginHint,
+      );
     }
     const fp = provider.fingerprint(live);
     const identity = provider.identity(live);
@@ -212,17 +240,17 @@ export async function addViaLogin(ctx: Ctx, name: string, opts: AddOptions = {})
     vault.manifest.active[provider.id] = profile.id;
     profile.lastUsedAt = new Date().toISOString();
     await vault.saveManifest();
-    await vault.clearRollback();
+    await vault.clearRollback(provider.id);
     await vault.audit(`add ${provider.id} ${profile.id}${dup ? ' duplicate' : ''}`);
     return { profile, capture, duplicateOf: dup, verify };
   } catch (err) {
-    await restoreLive(ctx, previous);
+    await restoreLive(ctx, live);
     if (created) {
       const id = created.id;
       vault.manifest.profiles = vault.manifest.profiles.filter((p) => p.id !== id);
       await vault.deleteProfile(id);
     }
-    await vault.clearRollback();
+    await vault.clearRollback(provider.id);
     await vault.audit(`add ${provider.id} failed-restored`);
     throw err;
   }
@@ -232,6 +260,7 @@ export async function addViaLogin(ctx: Ctx, name: string, opts: AddOptions = {})
 export async function addFromLive(ctx: Ctx, name: string): Promise<ProfileMeta> {
   const { vault, provider } = ctx;
   assertNameFree(vault.manifest, provider.id, name);
+  await provider.preflight?.();
   const live = await provider.readLive();
   if (!live || !provider.hasLogin(live)) {
     throw new LockerError(`${provider.displayName} is not logged in.`, 'E_NO_LIVE', 'Log in first, or use `ai-locker add <name>`.');
@@ -261,32 +290,36 @@ export async function addFromLive(ctx: Ctx, name: string): Promise<ProfileMeta> 
 /** Move the live login into the vault and leave the provider logged out. */
 export async function lockLive(ctx: Ctx, opts: GuardOptions = {}): Promise<CaptureResult> {
   const { vault, provider } = ctx;
-  await assertNoPendingRollback(vault);
+  await assertNoPendingRollback(vault, provider.id);
+  await provider.preflight?.();
   await ensureNotRunning(provider, opts.force);
-  const capture = await captureLive(ctx, opts);
+  const live = await provider.readLive();
+  const capture = await captureLive(ctx, opts, { live });
   if (capture.kind === 'empty') return capture;
-  const previous = await snapshotForRollback(ctx, 'lock');
+  await writeRollback(ctx, 'lock', live);
   try {
     await provider.clearLive();
   } catch (err) {
-    await restoreLive(ctx, previous);
+    await restoreLive(ctx, live);
+    await vault.clearRollback(provider.id);
+    await vault.audit(`lock ${provider.id} failed-restored`);
     throw err;
   }
-  await vault.clearRollback();
   vault.manifest.lastActive[provider.id] = vault.manifest.active[provider.id] ?? null;
   vault.manifest.active[provider.id] = null;
   await vault.saveManifest();
+  await vault.clearRollback(provider.id);
   await vault.audit(`lock ${provider.id}`);
   return capture;
 }
 
 /** Restore the live store from an interrupted operation's rollback record. */
 export async function rollback(ctx: Ctx, opts: { force?: boolean } = {}): Promise<{ takenAt: string; reason: string } | null> {
-  const record = await ctx.vault.readRollback();
-  if (!record || record.provider !== ctx.provider.id) return null;
+  const record = await ctx.vault.readRollback(ctx.provider.id);
+  if (!record) return null;
   await ensureNotRunning(ctx.provider, opts.force);
   await restoreLive(ctx, record.snapshot);
-  await ctx.vault.clearRollback();
+  await ctx.vault.clearRollback(ctx.provider.id);
   await ctx.vault.audit(`rollback ${ctx.provider.id}`);
   return { takenAt: record.takenAt, reason: record.reason };
 }
@@ -297,8 +330,10 @@ export function captureSummary(c: CaptureResult): string | null {
       return `Saved refreshed tokens for ${describeProfile(c.profile)}.`;
     case 'saved-new':
       return `Saved the previous login as ${describeProfile(c.profile)}.`;
-    case 'discarded':
-      return `Discarded the unsaved previous login${c.identity.email ? ` (${c.identity.email})` : ''}.`;
+    case 'discarded': {
+      const who = c.identity.email ?? c.identity.username;
+      return `Discarded the unsaved previous login${who ? ` (${who})` : ''}.`;
+    }
     default:
       return null;
   }

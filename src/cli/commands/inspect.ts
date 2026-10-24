@@ -14,26 +14,35 @@ import { publicMeta } from './profiles.js';
 export function registerInspect(program: Command): void {
   program
     .command('status')
-    .description('show the active profile and the live Claude Code login')
-    .option('-u, --usage', 'also fetch session/weekly usage for each profile (contacts api.anthropic.com)')
+    .description('show the active profile and the live login of the selected provider')
+    .option('-u, --usage', 'also fetch usage for each profile (when the provider exposes it)')
     .action(async (opts: { usage?: boolean }, cmd: Command) => {
       const g = cmd.optsWithGlobals<GlobalOpts>();
       await withVault(g, async ({ vault, provider }) => {
         const activeId = vault.manifest.active[provider.id] ?? null;
         const active = vault.manifest.profiles.find((p) => p.id === activeId) ?? null;
-        const live = await provider.readLive();
+        let live: Awaited<ReturnType<typeof provider.readLive>> = null;
+        let liveError: string | undefined;
+        try {
+          live = await provider.readLive();
+        } catch (err) {
+          // A malformed live store must not make `status` unusable; `doctor` shows the detail.
+          liveError = (err as Error).message;
+        }
         const liveLogin = live && provider.hasLogin(live) ? live : null;
         const liveId = liveLogin ? provider.identity(liveLogin) : null;
         const liveMatch = liveLogin
           ? matchProfile(vault.manifest, provider.id, provider.fingerprint(liveLogin), liveId ?? {})
           : undefined;
+        const usageFn = provider.capabilities.usage ? provider.usage : undefined;
+        const usageSupported = typeof usageFn === 'function';
 
         const usage: Record<string, UsageReport> = {};
-        if (opts.usage && provider.usage) {
+        if (opts.usage && usageFn) {
           for (const p of vault.manifest.profiles.filter((x) => x.provider === provider.id)) {
             // The live store holds the freshest tokens for whichever profile it belongs to.
             const snap = liveMatch?.id === p.id && liveLogin ? liveLogin : await vault.readProfile(p.id);
-            usage[p.name] = await provider.usage(snap);
+            usage[p.name] = await usageFn(snap);
           }
         }
 
@@ -44,28 +53,42 @@ export function registerInspect(program: Command): void {
           live: liveId
             ? {
                 email: liveId.email ?? null,
+                username: liveId.username ?? null,
+                accountKey: liveId.accountKey ?? null,
                 plan: liveId.plan ?? null,
                 savedAs: liveMatch?.name ?? null,
                 tokenExpiresAt: liveId.tokenExpiresAt ?? null,
                 refreshExpiresAt: liveId.refreshExpiresAt ?? null,
               }
             : null,
-          usage: opts.usage ? usage : undefined,
+          liveError: liveError ?? null,
+          usage: opts.usage && usageSupported ? usage : undefined,
         };
 
         emit(g, data, () => {
+          info(`${c.bold('Provider')}        ${provider.displayName} (${provider.id})`);
           info(`${c.bold('Active profile')}  ${active ? describeProfile(active) : c.dim('none')}`);
           if (liveId) {
             const saved = liveMatch ? c.green(`saved as "${liveMatch.name}"`) : c.yellow('NOT saved in the vault');
-            info(`${c.bold('Live login')}      ${liveId.email ?? 'unknown email'} (${liveId.plan ?? '?'}) — ${saved}`);
-            info(`${c.bold('Access token')}    expires ${relTime(liveId.tokenExpiresAt)} (Claude Code refreshes it)`);
-            info(`${c.bold('Login')}           expires ${relTime(liveId.refreshExpiresAt)}`);
+            const who = [liveId.email ?? liveId.username ?? liveId.accountKey ?? 'unknown account', liveId.plan]
+              .filter(Boolean)
+              .join(' · ');
+            info(`${c.bold('Live login')}      ${who} — ${saved}`);
+            if (liveId.tokenExpiresAt) {
+              info(`${c.bold('Access token')}    expires ${relTime(liveId.tokenExpiresAt)} (refreshed automatically)`);
+            }
+            if (liveId.refreshExpiresAt) info(`${c.bold('Login')}           expires ${relTime(liveId.refreshExpiresAt)}`);
+          } else if (liveError) {
+            info(`${c.bold('Live login')}      ${c.yellow('unavailable')} — ${liveError}`);
           } else {
             info(`${c.bold('Live login')}      ${c.dim('none (logged out)')}`);
           }
           info(`${c.bold('Store')}           ${data.store.kind}: ${data.store.location}`);
           if (opts.usage) {
             info('');
+            if (!usageSupported) {
+              info(c.dim(`Usage is not exposed by ${provider.displayName}.`));
+            }
             for (const [name, report] of Object.entries(usage)) {
               if (!report.ok) {
                 info(`${c.bold(name)}: ${c.dim(report.error ?? 'unavailable')}`);
@@ -85,7 +108,7 @@ export function registerInspect(program: Command): void {
 
   program
     .command('doctor')
-    .description('diagnose the vault, permissions and Claude Code setup')
+    .description('diagnose the vault, permissions and the selected provider setup')
     .action(async (_opts, cmd: Command) => {
       const g = cmd.optsWithGlobals<GlobalOpts>();
       const paths = lockerPaths();
@@ -103,11 +126,14 @@ export function registerInspect(program: Command): void {
           status: access.ok ? 'ok' : 'warn',
           detail: access.ok ? access.detail : `others may have access: ${access.detail}`,
         });
-        if (fs.existsSync(paths.rollback)) {
+        const pendingRollbacks = fs
+          .readdirSync(paths.home)
+          .filter((name) => /^rollback(?:-[A-Za-z0-9._-]+)?\.enc$/.test(name));
+        if (pendingRollbacks.length > 0) {
           checks.push({
             name: 'Interrupted operation',
             status: 'warn',
-            detail: 'a rollback snapshot exists; run `ai-locker rollback` to restore the login from before it',
+            detail: 'a rollback snapshot exists; run `ai-locker --provider <id> rollback` to restore it',
           });
         }
         try {
@@ -130,7 +156,7 @@ export function registerInspect(program: Command): void {
         }
       }
 
-      const provider = getProvider();
+      const provider = getProvider(g.provider);
       checks.push(...(await provider.doctor()));
       const procs = await provider.runningProcesses().catch(() => []);
       checks.push({

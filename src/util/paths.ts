@@ -12,7 +12,9 @@ export function lockerPaths(home = lockerHome()) {
     vault: path.join(home, 'vault.json'),
     profilesDir: path.join(home, 'profiles'),
     profile: (id: string) => path.join(home, 'profiles', `${id}.enc`),
+    /** Pre-provider-scoped rollback file, still read so an upgrade can finish an interrupted op. */
     rollback: path.join(home, 'rollback.enc'),
+    rollbackFor: (provider: string) => path.join(home, `rollback-${provider}.enc`),
     osUnlockBlob: path.join(home, 'os-unlock.bin'),
     audit: path.join(home, 'audit.log'),
     lock: path.join(home, '.lock'),

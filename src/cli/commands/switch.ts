@@ -16,8 +16,8 @@ function switchOptions(cmd: Command): Command {
   return cmd
     .option('--save-live-as <name>', 'if the current login is not saved yet, save it under this name first')
     .option('--discard-live', 'if the current login is not saved yet, drop it')
-    .option('--force', 'skip the "Claude Code is running" check')
-    .option('--no-verify', 'skip `claude auth status` verification');
+    .option('--force', 'skip the "provider is running" check')
+    .option('--no-verify', 'skip the provider status verification');
 }
 
 export function registerSwitch(program: Command): void {
@@ -25,7 +25,7 @@ export function registerSwitch(program: Command): void {
     program
       .command('use [profile]')
       .alias('switch')
-      .description('make a saved profile the active Claude Code login (picker if omitted)'),
+      .description('make a saved profile the active login (picker if omitted)'),
   ).action(async (ref: string | undefined, flags: SwitchFlags, cmd: Command) => {
     const g = cmd.optsWithGlobals<GlobalOpts>();
     await withVault(g, async (ctx) => {
@@ -39,7 +39,7 @@ export function registerSwitch(program: Command): void {
         if (!isInteractive()) throw new LockerError('Specify a profile name.', 'E_ARGS');
         const activeId = vault.manifest.active[provider.id];
         const id = await select({
-          message: 'Switch Claude Code to',
+          message: `Switch ${provider.displayName} to`,
           choices: profiles.map((p) => ({
             name: `${p.id === activeId ? '* ' : '  '}${describeProfile(p)}`,
             value: p.id,
@@ -64,19 +64,19 @@ export function registerSwitch(program: Command): void {
   });
 
   switchOptions(
-    program.command('lock').description('move the live login into the vault and leave Claude Code logged out'),
+    program.command('lock').description('move the live login into the vault and leave the provider logged out'),
   ).action(async (flags: SwitchFlags, cmd: Command) => {
     const g = cmd.optsWithGlobals<GlobalOpts>();
     await withVault(g, async (ctx) => {
       const capture = await lockLive(ctx, { ...livePolicy(flags), force: flags.force });
       emit(g, { locked: capture.kind !== 'empty', capture: capture.kind }, () => {
         if (capture.kind === 'empty') {
-          info('Claude Code is not logged in; nothing to lock.');
+          info(`${ctx.provider.displayName} is not logged in; nothing to lock.`);
           return;
         }
         const pre = captureSummary(capture);
         if (pre) info(c.dim(pre));
-        info(c.green('✔ ') + 'Locked. Claude Code is logged out; `ai-locker unlock` restores the last profile.');
+        info(c.green('✔ ') + `Locked. ${ctx.provider.displayName} is logged out; \`ai-locker unlock\` restores the last profile.`);
       });
     });
   });
@@ -103,20 +103,29 @@ export function registerSwitch(program: Command): void {
 
   program
     .command('rollback')
-    .description('restore the Claude Code login saved before an interrupted switch')
-    .option('--force', 'skip the "Claude Code is running" check')
+    .description('restore the login saved before an interrupted switch')
+    .option('--force', 'skip the "provider is running" check')
     .option('-y, --yes', 'do not ask for confirmation')
     .action(async (opts: { force?: boolean; yes?: boolean }, cmd: Command) => {
       const g = cmd.optsWithGlobals<GlobalOpts>();
       await withVault(g, async (ctx) => {
-        const record = await ctx.vault.readRollback();
+        const record = await ctx.vault.readRollback(ctx.provider.id);
         if (!record) {
+          const other = await ctx.vault.readRollback();
+          if (other) {
+            emit(g, { restored: false, pendingProvider: other.provider }, () =>
+              info(
+                `The interrupted operation belongs to ${other.provider}; retry with \`--provider ${other.provider} rollback\`.`,
+              ),
+            );
+            return;
+          }
           emit(g, { restored: false }, () => info('No rollback snapshot; the last operation completed normally.'));
           return;
         }
         if (!opts.yes && isInteractive()) {
           const ok = await confirm({
-            message: `Restore the Claude Code login saved at ${record.takenAt} (before "${record.reason}")?`,
+            message: `Restore the ${ctx.provider.displayName} login saved at ${record.takenAt} (before "${record.reason}")?`,
             default: true,
           });
           if (!ok) return;

@@ -1,6 +1,7 @@
 import { Command, CommanderError } from 'commander';
 import { LockerError } from './util/errors.js';
 import { c } from './util/output.js';
+import { DEFAULT_PROVIDER } from './providers/index.js';
 import { registerSetup } from './cli/commands/setup.js';
 import { registerProfiles } from './cli/commands/profiles.js';
 import { registerSwitch } from './cli/commands/switch.js';
@@ -10,10 +11,17 @@ import pkg from '../package.json' with { type: 'json' };
 const program = new Command();
 program
   .name('ai-locker')
-  .description('Keep several Claude Code logins in an encrypted vault and switch between them.')
+  .description(
+    'Keep several AI CLI logins (Claude Code, Qoder, Copilot, Antigravity) in an encrypted vault and switch between them.',
+  )
   .version(pkg.version)
   .option('--json', 'machine-readable output (tokens are never printed)')
   .option('--strict', 'ignore the OS key cache and always ask for the passphrase')
+  .option(
+    '--provider <id>',
+    'provider to manage: claude-code, qoder, copilot or agy',
+    process.env.AI_LOCKER_PROVIDER ?? DEFAULT_PROVIDER,
+  )
   .showHelpAfterError()
   .exitOverride();
 
@@ -31,6 +39,9 @@ Examples:
   ai-locker add personal            log in to another account and save it
   ai-locker use work                switch Claude Code to "work"
   ai-locker status --usage          active account and usage windows
+  ai-locker --provider qoder list   manage Qoder CLI logins (or set AI_LOCKER_PROVIDER=qoder)
+  ai-locker --provider copilot add work --from-live
+  ai-locker --provider agy add work      opens the agy TUI for /login
 
 Install the ai-locker command once with: npm install -g @anantbot/ai-locker`,
 );
