@@ -2,6 +2,7 @@ import { ClaudeCodeProvider } from './claude-code/index.js';
 import { QoderProvider } from './qoder/index.js';
 import { CopilotProvider } from './copilot/index.js';
 import { AgyProvider } from './antigravity/index.js';
+import { KiroProvider } from './kiro/index.js';
 import type { Provider } from './Provider.js';
 import { LockerError } from '../util/errors.js';
 
@@ -11,12 +12,21 @@ const factories = new Map<string, () => Provider<any>>([
   ['qoder', () => new QoderProvider()],
   ['copilot', () => new CopilotProvider()],
   ['agy', () => new AgyProvider()],
+  ['kiro', () => new KiroProvider()],
 ]);
 
 /** Accepted spellings that are not the canonical id stored in the vault. */
-const aliases = new Map<string, string>([['antigravity', 'agy']]);
+const aliases = new Map<string, string>([
+  ['antigravity', 'agy'],
+  ['kiro-cli', 'kiro'],
+]);
 
 export const DEFAULT_PROVIDER = 'claude-code';
+
+/** Canonical provider ids, in registration order. */
+export function providerIds(): string[] {
+  return [...factories.keys()];
+}
 
 export function canonicalProviderId(id: string): string {
   const key = id.trim().toLowerCase();

@@ -1,7 +1,7 @@
 import { Command, CommanderError } from 'commander';
 import { LockerError } from './util/errors.js';
 import { c } from './util/output.js';
-import { DEFAULT_PROVIDER } from './providers/index.js';
+import { DEFAULT_PROVIDER, providerIds } from './providers/index.js';
 import { registerSetup } from './cli/commands/setup.js';
 import { registerProfiles } from './cli/commands/profiles.js';
 import { registerSwitch } from './cli/commands/switch.js';
@@ -12,16 +12,12 @@ const program = new Command();
 program
   .name('ai-locker')
   .description(
-    'Keep several AI CLI logins (Claude Code, Qoder, Copilot, Antigravity) in an encrypted vault and switch between them.',
+    'Keep several AI CLI logins (Claude Code, Qoder, Copilot, Antigravity, Kiro) in an encrypted vault and switch between them.',
   )
   .version(pkg.version)
   .option('--json', 'machine-readable output (tokens are never printed)')
   .option('--strict', 'ignore the OS key cache and always ask for the passphrase')
-  .option(
-    '--provider <id>',
-    'provider to manage: claude-code, qoder, copilot or agy',
-    process.env.AI_LOCKER_PROVIDER ?? DEFAULT_PROVIDER,
-  )
+  .option('--provider <id>', `provider to manage: ${providerIds().join(', ')}`, process.env.AI_LOCKER_PROVIDER ?? DEFAULT_PROVIDER)
   .showHelpAfterError()
   .exitOverride();
 

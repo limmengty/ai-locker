@@ -12,6 +12,10 @@ import { CopilotProvider, type CopilotSnapshot } from '../src/providers/copilot/
 import type { CopilotEnv } from '../src/providers/copilot/env.js';
 import { parseCopilotConfig, readActiveUser, withActiveUser } from '../src/providers/copilot/config.js';
 import { AgyProvider } from '../src/providers/antigravity/index.js';
+import { KiroProvider } from '../src/providers/kiro/index.js';
+import type { KiroEnv } from '../src/providers/kiro/env.js';
+import type { KiroStoreLike } from '../src/providers/kiro/store.js';
+import type { KiroWhoAmi } from '../src/providers/kiro/status.js';
 import { resolveAgyEnv, type AgyEnv } from '../src/providers/antigravity/env.js';
 import { parseAgyCredential } from '../src/providers/antigravity/credential.js';
 import type {
@@ -462,6 +466,130 @@ export class FakeAgy {
         return { code: fake.modelsCode, stdout: fake.modelsOutput, stderr: fake.modelsError };
       },
       ...(this.loginImpl ? { loginImpl: () => this.loginImpl!() } : {}),
+    });
+  }
+}
+
+/** The JSON Kiro stores in its `auth_kv` row. */
+export function kiroTokenBlob(tag: string, revision = 0): string {
+  return JSON.stringify({
+    access_token: `kiro-at-${tag}-${revision}`,
+    refresh_token: `kiro-rt-${tag}-${revision}`,
+    expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+    provider: 'google',
+    profile_arn: `arn:aws:codewhisperer:us-east-1:111111111111:profile/${tag}`,
+  });
+}
+
+export function kiroWhoAmi(tag: string): KiroWhoAmi {
+  return { accountType: 'Pro', provider: 'Google', email: `${tag}@example.com` };
+}
+
+function kiroTagOf(token: string | null): string | null {
+  if (!token) return null;
+  try {
+    const at = (JSON.parse(token) as { access_token?: string }).access_token ?? '';
+    return /^kiro-at-(.+)-\d+$/.exec(at)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** A fake Kiro install: the two database rows the CLI keeps, plus a scripted whoami. */
+export class FakeKiro {
+  readonly root = tempDir('ai-locker-kiro-');
+  readonly dbFile = path.join(this.root, 'data.sqlite3');
+  readonly bin: string;
+  token: string | null = null;
+  profile: string | null = null;
+  /** False simulates a machine where kiro-cli has never run. */
+  storeExists = true;
+  running: RunningProcess[] = [];
+  whoAmi: KiroWhoAmi | null = null;
+  whoAmiError: string | null = null;
+  /** Simulates `kiro-cli login` writing a new account; null makes the login fail. */
+  nextLogin: string | null = null;
+  loginCalls = 0;
+
+  constructor() {
+    this.bin = path.join(this.root, process.platform === 'win32' ? 'kiro-cli.exe' : 'kiro-cli');
+    fs.writeFileSync(this.bin, '');
+  }
+
+  loginAs(tag: string) {
+    this.token = kiroTokenBlob(tag);
+    this.profile = JSON.stringify({ arn: `arn:aws:codewhisperer:us-east-1:111111111111:profile/${tag}`, profile_name: tag });
+    this.whoAmi = kiroWhoAmi(tag);
+    this.storeExists = true;
+  }
+
+  rotate(tag: string, revision: number) {
+    this.token = kiroTokenBlob(tag, revision);
+    this.whoAmi = kiroWhoAmi(tag);
+  }
+
+  currentTag(): string | null {
+    return kiroTagOf(this.token);
+  }
+
+  env(): KiroEnv {
+    return {
+      platform: process.platform,
+      home: this.root,
+      dataDir: this.root,
+      dbFile: this.dbFile,
+      settingsDir: path.join(this.root, '.kiro'),
+    };
+  }
+
+  private store(): KiroStoreLike {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const fake = this;
+    return {
+      kind: 'memory sqlite',
+      get location() {
+        return fake.dbFile;
+      },
+      exists: () => fake.storeExists,
+      readToken: async () => fake.token,
+      readProfile: async () => fake.profile,
+      writeRows: async (token: string, profile: string | null) => {
+        fake.token = token;
+        fake.profile = profile;
+        fake.storeExists = true;
+        const tag = kiroTagOf(token);
+        fake.whoAmi = tag ? kiroWhoAmi(tag) : { account: null };
+      },
+      clearRows: async () => {
+        fake.token = null;
+        fake.profile = null;
+        fake.whoAmi = { account: null };
+      },
+    };
+  }
+
+  provider(processEnv: NodeJS.ProcessEnv = { PATH: process.env.PATH ?? '' }): KiroProvider {
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    const fake = this;
+    return new KiroProvider({
+      env: this.env(),
+      store: this.store(),
+      kiroBin: this.bin,
+      processEnv,
+      findProcesses: async () => fake.running,
+      whoAmiFetcher: async () => {
+        if (fake.whoAmiError) return { whoami: null, loggedIn: false, code: 1, error: fake.whoAmiError };
+        const whoami = fake.whoAmi ?? (fake.currentTag() ? kiroWhoAmi(fake.currentTag() as string) : { account: null });
+        return { whoami, loggedIn: Boolean(whoami.accountType || whoami.provider), code: 0 };
+      },
+      versionFetcher: async () => ({ code: 0, stdout: 'kiro-cli-chat 2.16.0\n', stderr: '' }),
+      loginImpl: async () => {
+        fake.loginCalls += 1;
+        if (!fake.nextLogin) return 1;
+        fake.loginAs(fake.nextLogin);
+        fake.nextLogin = null;
+        return 0;
+      },
     });
   }
 }

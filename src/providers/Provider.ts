@@ -1,7 +1,7 @@
 /**
  * A Provider knows how one AI CLI stores its login on this machine. ai-locker only ever
  * moves opaque snapshots between the provider's live store and the encrypted vault.
- * Claude Code, Qoder, Copilot and Antigravity implement this contract.
+ * Claude Code, Qoder, Copilot, Antigravity and Kiro implement this contract.
  */
 export interface Identity {
   /** Stable key for "same account" (survives token rotation). */
