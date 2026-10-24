@@ -26,24 +26,26 @@ export function resolveCopilotEnv(
   platform = process.platform,
   home = os.homedir(),
 ): CopilotEnv {
+  // Resolve paths for the target platform, not the host running this code.
+  const p = platform === 'win32' ? path.win32 : path.posix;
   const custom = env.COPILOT_HOME?.trim();
-  const configDir = custom ? path.resolve(custom) : path.join(home, '.copilot');
+  const configDir = custom ? p.resolve(custom) : p.join(home, '.copilot');
   let cacheDir: string;
   if (platform === 'win32') {
     const local = env.LOCALAPPDATA?.trim();
-    cacheDir = local ? path.join(local, 'copilot') : path.join(home, 'AppData', 'Local', 'copilot');
+    cacheDir = local ? p.join(local, 'copilot') : p.join(home, 'AppData', 'Local', 'copilot');
   } else if (platform === 'darwin') {
-    cacheDir = path.join(home, 'Library', 'Caches', 'copilot');
+    cacheDir = p.join(home, 'Library', 'Caches', 'copilot');
   } else {
     const xdg = env.XDG_CACHE_HOME?.trim();
-    cacheDir = xdg ? path.join(xdg, 'copilot') : path.join(home, '.cache', 'copilot');
+    cacheDir = xdg ? p.join(xdg, 'copilot') : p.join(home, '.cache', 'copilot');
   }
   return {
     platform,
     configDir,
-    configFile: path.join(configDir, 'config.json'),
-    settingsFile: path.join(configDir, 'settings.json'),
-    userCacheFile: path.join(cacheDir, 'copilot-user-cache.json'),
+    configFile: p.join(configDir, 'config.json'),
+    settingsFile: p.join(configDir, 'settings.json'),
+    userCacheFile: p.join(cacheDir, 'copilot-user-cache.json'),
   };
 }
 

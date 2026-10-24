@@ -23,12 +23,18 @@ function profileNames(vault: { manifest: { profiles: { name: string }[] } }): st
 describe('Copilot environment', () => {
   it('defaults to ~/.copilot and a per-platform cache directory', () => {
     const linux = resolveCopilotEnv({}, 'linux', '/home/me');
-    expect(linux.configDir).toBe(path.join('/home/me', '.copilot'));
-    expect(linux.configFile).toBe(path.join('/home/me', '.copilot', 'config.json'));
-    expect(linux.userCacheFile).toBe(path.join('/home/me', '.cache', 'copilot', 'copilot-user-cache.json'));
+    expect(linux.configDir).toBe(path.posix.join('/home/me', '.copilot'));
+    expect(linux.configFile).toBe(path.posix.join('/home/me', '.copilot', 'config.json'));
+    expect(linux.userCacheFile).toBe(
+      path.posix.join('/home/me', '.cache', 'copilot', 'copilot-user-cache.json'),
+    );
 
-    const custom = resolveCopilotEnv({ COPILOT_HOME: path.resolve('/tmp/copilot-home') }, 'linux', '/home/me');
-    expect(custom.configDir).toBe(path.resolve('/tmp/copilot-home'));
+    const custom = resolveCopilotEnv(
+      { COPILOT_HOME: path.posix.resolve('/tmp/copilot-home') },
+      'linux',
+      '/home/me',
+    );
+    expect(custom.configDir).toBe(path.posix.resolve('/tmp/copilot-home'));
 
     const win = resolveCopilotEnv(
       { LOCALAPPDATA: path.win32.join('C:', 'Users', 'me', 'AppData', 'Local') },
