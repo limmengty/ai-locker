@@ -1,6 +1,6 @@
 {
   "name": "@anantbot/ai-locker",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Encrypted multi-account switcher for Claude Code, Qoder CLI, GitHub Copilot CLI and Google Antigravity CLI. Keep several logins in a passphrase-protected vault and swap the active one with one command.",
   "author": "KEAT PORHONG",
   "license": "MIT",
