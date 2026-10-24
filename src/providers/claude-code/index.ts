@@ -39,6 +39,15 @@ export interface ClaudeCodeProviderOptions {
 export class ClaudeCodeProvider implements Provider<ClaudeSnapshot> {
   readonly id = 'claude-code';
   readonly displayName = 'Claude Code';
+  readonly loginHint = 'claude auth login';
+  readonly runningHint = 'Claude Code session (including IDE extensions)';
+  readonly capabilities = {
+    login: { email: true, sso: true, console: true, host: false },
+    automatedLogin: true,
+    manualLogin: true,
+    usage: true,
+    portableExport: true,
+  };
   readonly env: ClaudeEnv;
   private readonly store: CredentialStore;
   private readonly identityStore: IdentityStore;

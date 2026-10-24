@@ -14,8 +14,8 @@ import { publicMeta } from './profiles.js';
 export function registerInspect(program: Command): void {
   program
     .command('status')
-    .description('show the active profile and the live Claude Code login')
-    .option('-u, --usage', 'also fetch session/weekly usage for each profile (contacts api.anthropic.com)')
+    .description('show the active profile and the live login of the selected provider')
+    .option('-u, --usage', 'also fetch usage for each profile (Claude Code only; contacts api.anthropic.com)')
     .action(async (opts: { usage?: boolean }, cmd: Command) => {
       const g = cmd.optsWithGlobals<GlobalOpts>();
       await withVault(g, async ({ vault, provider }) => {
@@ -27,6 +27,7 @@ export function registerInspect(program: Command): void {
         const liveMatch = liveLogin
           ? matchProfile(vault.manifest, provider.id, provider.fingerprint(liveLogin), liveId ?? {})
           : undefined;
+        const usageSupported = Boolean(provider.usage);
 
         const usage: Record<string, UsageReport> = {};
         if (opts.usage && provider.usage) {
@@ -44,28 +45,39 @@ export function registerInspect(program: Command): void {
           live: liveId
             ? {
                 email: liveId.email ?? null,
+                username: liveId.username ?? null,
+                accountKey: liveId.accountKey ?? null,
                 plan: liveId.plan ?? null,
                 savedAs: liveMatch?.name ?? null,
                 tokenExpiresAt: liveId.tokenExpiresAt ?? null,
                 refreshExpiresAt: liveId.refreshExpiresAt ?? null,
               }
             : null,
-          usage: opts.usage ? usage : undefined,
+          usage: opts.usage && usageSupported ? usage : undefined,
         };
 
         emit(g, data, () => {
+          info(`${c.bold('Provider')}        ${provider.displayName} (${provider.id})`);
           info(`${c.bold('Active profile')}  ${active ? describeProfile(active) : c.dim('none')}`);
           if (liveId) {
             const saved = liveMatch ? c.green(`saved as "${liveMatch.name}"`) : c.yellow('NOT saved in the vault');
-            info(`${c.bold('Live login')}      ${liveId.email ?? 'unknown email'} (${liveId.plan ?? '?'}) — ${saved}`);
-            info(`${c.bold('Access token')}    expires ${relTime(liveId.tokenExpiresAt)} (Claude Code refreshes it)`);
-            info(`${c.bold('Login')}           expires ${relTime(liveId.refreshExpiresAt)}`);
+            const who = [liveId.email ?? liveId.username ?? liveId.accountKey ?? 'unknown account', liveId.plan]
+              .filter(Boolean)
+              .join(' · ');
+            info(`${c.bold('Live login')}      ${who} — ${saved}`);
+            if (liveId.tokenExpiresAt) {
+              info(`${c.bold('Access token')}    expires ${relTime(liveId.tokenExpiresAt)} (refreshed automatically)`);
+            }
+            if (liveId.refreshExpiresAt) info(`${c.bold('Login')}           expires ${relTime(liveId.refreshExpiresAt)}`);
           } else {
             info(`${c.bold('Live login')}      ${c.dim('none (logged out)')}`);
           }
           info(`${c.bold('Store')}           ${data.store.kind}: ${data.store.location}`);
           if (opts.usage) {
             info('');
+            if (!usageSupported) {
+              info(c.dim(`Usage is not exposed by ${provider.displayName}.`));
+            }
             for (const [name, report] of Object.entries(usage)) {
               if (!report.ok) {
                 info(`${c.bold(name)}: ${c.dim(report.error ?? 'unavailable')}`);
@@ -85,7 +97,7 @@ export function registerInspect(program: Command): void {
 
   program
     .command('doctor')
-    .description('diagnose the vault, permissions and Claude Code setup')
+    .description('diagnose the vault, permissions and the selected provider setup')
     .action(async (_opts, cmd: Command) => {
       const g = cmd.optsWithGlobals<GlobalOpts>();
       const paths = lockerPaths();
@@ -130,7 +142,7 @@ export function registerInspect(program: Command): void {
         }
       }
 
-      const provider = getProvider();
+      const provider = getProvider(g.provider);
       checks.push(...(await provider.doctor()));
       const procs = await provider.runningProcesses().catch(() => []);
       checks.push({

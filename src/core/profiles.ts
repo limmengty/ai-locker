@@ -22,6 +22,7 @@ export function findProfile(manifest: Manifest, provider: string, ref: string): 
   return (
     list.find((p) => p.name.toLowerCase() === lower) ??
     list.find((p) => p.email?.toLowerCase() === lower) ??
+    list.find((p) => p.username?.toLowerCase() === lower) ??
     (ref.length >= 6 ? list.find((p) => p.id.startsWith(lower)) : undefined)
   );
 }
@@ -77,6 +78,7 @@ function identityFields(identity: Identity): Partial<ProfileMeta> {
   // Keep previously known values if the live login lacks them (e.g. oauthAccount not fetched yet).
   if (identity.accountKey) out.accountKey = identity.accountKey;
   if (identity.email) out.email = identity.email;
+  if (identity.username) out.username = identity.username;
   if (identity.organization) out.organization = identity.organization;
   if (identity.plan) out.plan = identity.plan;
   if (identity.tokenExpiresAt) out.tokenExpiresAt = identity.tokenExpiresAt;
@@ -84,9 +86,13 @@ function identityFields(identity: Identity): Partial<ProfileMeta> {
   return out;
 }
 
-export function describeProfile(p: Pick<ProfileMeta, 'name' | 'email' | 'organization' | 'plan'>): string {
-  const extras = [p.email, p.plan, p.organization && p.organization !== p.email ? p.organization : undefined].filter(
-    Boolean,
-  );
+export function describeProfile(
+  p: Pick<ProfileMeta, 'name' | 'email' | 'username' | 'organization' | 'plan'>,
+): string {
+  const extras = [
+    p.email ?? p.username,
+    p.plan,
+    p.organization && p.organization !== (p.email ?? p.username) ? p.organization : undefined,
+  ].filter(Boolean);
   return extras.length ? `${p.name} (${extras.join(', ')})` : p.name;
 }

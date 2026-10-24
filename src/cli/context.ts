@@ -11,6 +11,7 @@ import { note } from '../util/output.js';
 export interface GlobalOpts {
   json?: boolean;
   strict?: boolean;
+  provider?: string;
 }
 
 export const isInteractive = () => Boolean(process.stdin.isTTY && process.stdout.isTTY) && !process.env.CI;
@@ -42,10 +43,12 @@ export async function withVault<T>(g: GlobalOpts, fn: (ctx: Ctx) => Promise<T>):
   if (!Vault.exists(paths)) {
     throw new LockerError('No vault found.', 'E_NO_VAULT', 'Run `ai-locker init` to create one.');
   }
+  // Resolve the provider before unlocking so a typo doesn't cost a passphrase prompt.
+  const provider = getProvider(g.provider);
   return withLock(paths.lock, async () => {
     const vault = await Vault.unlock(paths, { strict: g.strict, getPassphrase });
     try {
-      return await fn({ vault, provider: getProvider() });
+      return await fn({ vault, provider });
     } finally {
       vault.close();
     }
@@ -67,17 +70,17 @@ export function livePolicy(flags: LivePolicyFlags): UnknownLivePolicy {
 }
 
 async function askToSaveUnknown(identity: Identity): Promise<string | null> {
-  const who = identity.email ? ` (${identity.email})` : '';
-  const save = await confirm({ message: `The current login${who} is not in the vault. Save it first?`, default: true });
+  const who = identity.email ?? identity.username;
+  const save = await confirm({ message: `The current login${who ? ` (${who})` : ''} is not in the vault. Save it first?`, default: true });
   if (!save) return null;
   return input({
     message: 'Name for this profile',
-    default: suggestName(identity.email),
+    default: suggestName(who),
     validate: (v) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(v) || 'Letters, digits, ".", "_" or "-" only',
   });
 }
 
-export function suggestName(email?: string): string {
-  const local = email?.split('@')[0]?.replace(/[^A-Za-z0-9._-]/g, '') ?? '';
+export function suggestName(account?: string): string {
+  const local = account?.split('@')[0]?.replace(/[^A-Za-z0-9._-]/g, '') ?? '';
   return /^[A-Za-z0-9]/.test(local) ? local.slice(0, 64) : 'previous';
 }

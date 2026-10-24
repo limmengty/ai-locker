@@ -14,6 +14,8 @@ export interface ProfileMeta {
   /** Stable account identity used to recognise the same login after token rotation. */
   accountKey?: string;
   email?: string;
+  /** Login name for providers identified by username rather than email. */
+  username?: string;
   organization?: string;
   plan?: string;
   /** Short hash of the refresh token at last capture (never the token itself). */
